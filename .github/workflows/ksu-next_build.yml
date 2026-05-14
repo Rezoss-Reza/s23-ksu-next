@@ -5,6 +5,10 @@ on:
     #- cron: '0 4 * * *'  # Runs every day at 04:00 UTC
   workflow_dispatch: # Allow manual trigger if needed
   #push:
+  paths:
+      - ".github/workflows/kernel-build.yml"
+      - "rezoss_next3_susfs2.patch"
+      - "anykernel.zip"
     
 jobs:
   build:
@@ -67,10 +71,11 @@ jobs:
           cp ./susfs4ksu/kernel_patches/50_add_susfs_in_gki-android13-5.15.patch ./
           cp -rv ./susfs4ksu/kernel_patches/fs/* fs/
           cp -rv ./susfs4ksu/kernel_patches/include/linux/* include/linux/
-          patch -p1 --fuzz=3 < ./50_add_susfs_in_gki-android13-5.15.patch
-          cd KernelSU-Next
-          patch -p1 --fuzz=3 < ./10_enable_susfs_for_ksu.patch
-          cd ..
+          #patch -p1 --fuzz=3 < ./50_add_susfs_in_gki-android13-5.15.patch
+          #cd KernelSU-Next
+          #patch -p1 --fuzz=3 < ./10_enable_susfs_for_ksu.patch
+          #cd ..
+          patch -p1 --fuzz=3 < "${GITHUB_WORKSPACE}/rezoss_next3_susfs2.patch"
           
           # Integrate manual hook 1.6
           curl -L -o manual-hook.patch https://github.com/SukiSU-Ultra/SukiSU_patch/raw/83aa64b7548890bb1f2eff6c990c03a1802df27b/hooks/scope_min_manual_hooks_v1.6.patch
