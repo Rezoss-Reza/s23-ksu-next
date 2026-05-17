@@ -65,25 +65,22 @@ jobs:
           fi
     
           if [ "$LOCAL_SUBLEVEL" -lt "$UPSTREAM_SUBLEVEL" ]; then
-            echo "Local kernel is older. Merging ${COMMON_BRANCH}..."
-    
+            echo "Local kernel is older. Merging ${COMMON_BRANCH}..."    
             git config user.name "github-actions[bot]"
             git config user.email "github-actions[bot]@users.noreply.github.com"
-
-        # Needed because your clone uses --depth=1.
-            git fetch --unshallow origin android13-5.15 || true
-    
+            # Needed because your clone uses --depth=1.
+            git fetch --unshallow origin android13-5.15 || true    
             git remote add android-common "$COMMON_REMOTE" || git remote set-url android-common "$COMMON_REMOTE"
             git fetch --no-tags android-common "$COMMON_BRANCH"
     
             git merge --no-edit --no-ff FETCH_HEAD || {
-              echo "Android common merge failed. Conflict must be fixed manually."
-              git status --short
-              exit 1
+            echo "Android common merge failed. Conflict must be fixed manually."
+            git status --short
+            exit 1
             }
-        else
+          else
             echo "Local kernel is already same or newer. No merge needed."
-        fi
+          fi
   
             echo "KERNEL_VERSION=$(get_make_var SUBLEVEL Makefile)" >> "$GITHUB_ENV"
         
