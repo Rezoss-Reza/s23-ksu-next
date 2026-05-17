@@ -96,7 +96,7 @@ jobs:
             
             echo "Running real merge with -X theirs..."
             
-            git merge -X theirs --no-edit --no-ff FETCH_HEAD || {
+            git merge -X ours --no-edit --no-ff FETCH_HEAD || {
               echo "::error::Merge with -X theirs still failed."
               git status --short
               exit 1
