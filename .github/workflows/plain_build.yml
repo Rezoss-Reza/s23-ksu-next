@@ -68,15 +68,38 @@ jobs:
             echo "Local kernel is older. Merging ${COMMON_BRANCH}..."    
             git config user.name "github-actions[bot]"
             git config user.email "github-actions[bot]@users.noreply.github.com"
-            # Needed because your clone uses --depth=1.
+            # Needed because clone uses --depth=1.
             git fetch --unshallow origin android13-5.15 || true    
             git remote add android-common "$COMMON_REMOTE" || git remote set-url android-common "$COMMON_REMOTE"
+            
             git fetch --no-tags android-common "$COMMON_BRANCH"
-    
-            git merge --no-edit --no-ff FETCH_HEAD || {
-            echo "Android common merge failed. Conflict must be fixed manually."
-            git status --short
-            exit 1
+            echo "Checking possible merge conflicts before using -X theirs..."
+            
+            set +e
+            git merge --no-commit --no-ff FETCH_HEAD
+            TEST_MERGE_STATUS=$?
+            set -e
+            
+            if [ "$TEST_MERGE_STATUS" -ne 0 ]; then
+              echo "Normal merge would conflict in these files:"
+              git diff --name-only --diff-filter=U | while read -r file; do
+                echo "::warning::Merge conflict: $file"
+              done
+            
+              echo "Aborting test merge..."
+              git merge --abort || git reset --hard HEAD
+            else
+              echo "Normal merge has no conflicts."
+              echo "Aborting test merge before real merge..."
+              git merge --abort || git reset --hard HEAD
+            fi
+            
+            echo "Running real merge with -X theirs..."
+            
+            git merge -X theirs --no-edit --no-ff FETCH_HEAD || {
+              echo "::error::Merge with -X theirs still failed."
+              git status --short
+              exit 1
             }
           else
             echo "Local kernel is already same or newer. No merge needed."
