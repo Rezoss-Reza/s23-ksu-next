@@ -30,7 +30,8 @@ jobs:
         run: |
           set -euxo pipefail
 
-          git clone --depth=1 -b android13-5.15 https://github.com/samsung-sm8550/kernel_samsung_sm8550-common.git kernel
+          #git clone --depth=1 -b android13-5.15 https://github.com/samsung-sm8550/kernel_samsung_sm8550-common.git kernel
+          git clone --depth=1 -b android13-5.15 https://github.com/reddxae/kernel_samsung_sm8550-common-ksu.git kernel
           cd kernel
     
           COMMON_REMOTE="https://android.googlesource.com/kernel/common"
