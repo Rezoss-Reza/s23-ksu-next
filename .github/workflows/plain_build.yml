@@ -31,7 +31,7 @@ jobs:
           set -euxo pipefail
 
           git clone --depth=1 -b android13-5.15 https://github.com/samsung-sm8550/kernel_samsung_sm8550-common.git kernel
-          # git clone --depth=1 -b android13-5.15 https://github.com/reddxae/kernel_samsung_sm8550-common-ksu.git kernel
+          #git clone --depth=1 -b android13-5.15 https://github.com/reddxae/kernel_samsung_sm8550-common-ksu.git kernel
           cd kernel
     
           #COMMON_REMOTE="https://android.googlesource.com/kernel/common"
@@ -63,7 +63,7 @@ jobs:
             #echo "Different kernel base: local=$LOCAL_VERSION.$LOCAL_PATCHLEVEL upstream=$UPSTREAM_VERSION.$UPSTREAM_PATCHLEVEL"
             #echo "Refusing automatic merge."
             #exit 1
-         # fi
+          #fi
     
           #if [ "$LOCAL_SUBLEVEL" -lt "$UPSTREAM_SUBLEVEL" ]; then
             #echo "Local kernel is older. Merging ${COMMON_BRANCH}..."    
