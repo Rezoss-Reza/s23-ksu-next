@@ -1,0 +1,33 @@
+diff --git a/drivers/hid/hid-multitouch.c b/drivers/hid/hid-multitouch.c
+index 0927fd4f8..672c9e4fe 100644
+--- a/drivers/hid/hid-multitouch.c
++++ b/drivers/hid/hid-multitouch.c
+@@ -454,7 +454,6 @@ static void mt_get_feature(struct hid_device *hdev, struct hid_report *report)
+ 	int ret;
+ 	u32 size = hid_report_len(report);
+ 	u8 *buf;
+-	struct hid_report_enum *rep_enum;
+ 
+ 	/*
+ 	 * Do not fetch the feature report if the device has been explicitly
+diff --git a/fs/f2fs/segment.c b/fs/f2fs/segment.c
+index cccb6f297..bc1214ea7 100644
+--- a/fs/f2fs/segment.c
++++ b/fs/f2fs/segment.c
+@@ -3890,7 +3890,7 @@ void __update_summary_of_block(struct f2fs_sb_info *sbi,
+ 	/* change the current segment */
+ 	if (segno != curseg->segno) {
+ 		curseg->next_segno = segno;
+-		change_curseg(sbi, type, true);
++		change_curseg(sbi, type);
+ 	}
+ 
+ 	curseg->next_blkoff = GET_BLKOFF_FROM_SEG0(sbi, blkaddr);
+@@ -3899,7 +3899,7 @@ void __update_summary_of_block(struct f2fs_sb_info *sbi,
+ 	/* restore current segment */
+ 	if (old_cursegno != curseg->segno) {
+ 		curseg->next_segno = old_cursegno;
+-		change_curseg(sbi, type, true);
++		change_curseg(sbi, type);
+ 	}
+ 	curseg->next_blkoff = old_blkoff;

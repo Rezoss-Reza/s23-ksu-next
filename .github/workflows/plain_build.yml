@@ -70,10 +70,10 @@ jobs:
             git config user.name "github-actions[bot]"
             git config user.email "github-actions[bot]@users.noreply.github.com"
             # Needed because clone uses --depth=1.
-            git fetch --unshallow origin android13-5.15 || true    
+            git fetch --depth=100 origin android13-5.15 || git fetch --unshallow origin android13-5.15 || true    
             git remote add android-common "$COMMON_REMOTE" || git remote set-url android-common "$COMMON_REMOTE"
             
-            git fetch --no-tags android-common "$COMMON_BRANCH"
+            git fetch --depth=100 --no-tags android-common "$COMMON_BRANCH"
             echo "Checking possible merge conflicts before using -X theirs..."
             
             set +e
@@ -95,13 +95,16 @@ jobs:
               git merge --abort || git reset --hard HEAD
             fi
             
-            cho "Running real merge with -X theirs..."
+            echo "Running real merge with -X ours..."
             
             git merge -X ours --no-edit --no-ff FETCH_HEAD || {
-              echo "::error::Merge with -X theirs still failed."
+              echo "::error::Merge with -X ours still failed."
               git status --short
               exit 1
             }
+
+            echo "Applying LTS compilation fix patch..."
+            patch -p1 --fuzz=3 < "${GITHUB_WORKSPACE}/samsung_lts_compile_fix.patch"
            else
              echo "Local kernel is already same or newer. No merge needed."
            fi
