@@ -15,6 +15,7 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 360
     steps:
       - name: Checkout the repository
         uses: actions/checkout@v4 
@@ -121,14 +122,32 @@ jobs:
       - name: Set up swap space
         uses: pierotofy/set-swap-space@master
         with:
-          swap-size-gb: 16
+          swap-size-gb: 32
 
       - name: Build the kernel
         run: |
           set -euxo pipefail
           cd kernel
           chmod +x scripts/build.sh
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path("scripts/build.sh")
+          text = path.read_text()
+          text = text.replace('-j"$(nproc --all)"', '-j"${BUILD_JOBS:-2}"')
+          path.write_text(text)
+          PY
+          export BUILD_JOBS="${BUILD_JOBS:-2}"
+          (
+            while true; do
+              sleep 60
+              echo "[keepalive] kernel build still running at $(date)"
+              free -h || true
+            done
+          ) &
+          KEEPALIVE_PID="$!"
+          trap 'kill "$KEEPALIVE_PID" 2>/dev/null || true' EXIT
           ./scripts/build.sh 2>&1 | tee "$GITHUB_WORKSPACE/build.log"
+          kill "$KEEPALIVE_PID" 2>/dev/null || true
 
       - name: Prepare wonder_mosey source
         run: |
