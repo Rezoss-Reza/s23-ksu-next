@@ -134,6 +134,21 @@ jobs:
           path = Path("scripts/build.sh")
           text = path.read_text()
           text = text.replace('-j"$(nproc --all)"', '-j"${BUILD_JOBS:-2}"')
+          needle = '       "$KERNEL_DEFCONFIG" || err "defconfig failed"\n\n  make -j"${BUILD_JOBS:-2}"'
+          insert = '''       "$KERNEL_DEFCONFIG" || err "defconfig failed"
+
+          scripts/config --file "$OUT_DIR/.config" -e WIRELESS
+          scripts/config --file "$OUT_DIR/.config" -m CFG80211
+          scripts/config --file "$OUT_DIR/.config" -d CFG80211_DEFAULT_PS
+          scripts/config --file "$OUT_DIR/.config" -d CFG80211_CRDA_SUPPORT
+          make O="$OUT_DIR" ARCH=arm64 CC=clang LD=ld.lld LLVM=1 LLVM_IAS=1 olddefconfig \\
+               || err "cfg80211 olddefconfig failed"
+          grep -E '^(CONFIG_WIRELESS|CONFIG_CFG80211)=|^# CONFIG_CFG80211' "$OUT_DIR/.config"
+
+          make -j"${BUILD_JOBS:-2}"'''
+          if needle not in text:
+              raise SystemExit("Could not patch scripts/build.sh defconfig block")
+          text = text.replace(needle, insert)
           path.write_text(text)
           PY
           export BUILD_JOBS="${BUILD_JOBS:-2}"
@@ -1151,6 +1166,7 @@ jobs:
 
           export CLANG_DIR="$HOME/tools/google-clang"
           export PATH="$CLANG_DIR/bin:$PATH"
+          export CCACHE_DISABLE=1
           test -x "$CLANG_DIR/bin/clang"
           test -f "$GITHUB_WORKSPACE/kernel/out/Module.symvers"
 
@@ -1158,26 +1174,27 @@ jobs:
           ver="$(echo "$ver" | sed -E 's/\(http[^)]*\)//g; s/[[:space:]]+/ /g; s/[[:space:]]+$//')"
           export KBUILD_COMPILER_STRING="$ver"
 
-          "$GITHUB_WORKSPACE/kernel/scripts/config" --file "$GITHUB_WORKSPACE/kernel/out/.config" -m CFG80211
-          "$GITHUB_WORKSPACE/kernel/scripts/config" --file "$GITHUB_WORKSPACE/kernel/out/.config" -d CFG80211_DEFAULT_PS
-          "$GITHUB_WORKSPACE/kernel/scripts/config" --file "$GITHUB_WORKSPACE/kernel/out/.config" -d CFG80211_CRDA_SUPPORT
-          make -C kernel O="$GITHUB_WORKSPACE/kernel/out" \
-            ARCH=arm64 CC=clang LD=ld.lld LLVM=1 LLVM_IAS=1 olddefconfig
+          grep -E '^(CONFIG_WIRELESS|CONFIG_CFG80211)=|^# CONFIG_CFG80211' "$GITHUB_WORKSPACE/kernel/out/.config"
 
           KERNEL_RELEASE="$(make -s -C kernel O="$GITHUB_WORKSPACE/kernel/out" \
             ARCH=arm64 CC=clang LD=ld.lld LLVM=1 LLVM_IAS=1 kernelrelease)"
 
-          make -j"$(nproc --all)" -C kernel O="$GITHUB_WORKSPACE/kernel/out" \
-            ARCH=arm64 CC=clang LD=ld.lld LLVM=1 LLVM_IAS=1 \
-            M=net/wireless modules
-
           CFG80211_SYMVERS="$GITHUB_WORKSPACE/kernel/out/net/wireless/Module.symvers"
-          test -f "$CFG80211_SYMVERS"
-          grep -E 'cfg80211_register_netdevice|wiphy_new_nm|cfg80211_vendor_cmd_reply' "$CFG80211_SYMVERS"
+          TOP_SYMVERS="$GITHUB_WORKSPACE/kernel/out/Module.symvers"
+          CFG80211_KO="$GITHUB_WORKSPACE/kernel/out/net/wireless/cfg80211.ko"
+          test -f "$CFG80211_KO"
+          grep 'net/wireless/cfg80211.ko' "$GITHUB_WORKSPACE/kernel/out/modules.order"
+          if [ -f "$CFG80211_SYMVERS" ] && grep -qE 'cfg80211_register_netdevice|wiphy_new_nm|cfg80211_vendor_cmd_reply' "$CFG80211_SYMVERS"; then
+            EXTRA_SYMVERS="$CFG80211_SYMVERS"
+          else
+            EXTRA_SYMVERS="$TOP_SYMVERS"
+          fi
+          test -f "$EXTRA_SYMVERS"
+          grep -E 'cfg80211_register_netdevice|wiphy_new_nm|cfg80211_vendor_cmd_reply' "$EXTRA_SYMVERS"
 
           make -j"$(nproc --all)" -C kernel O="$GITHUB_WORKSPACE/kernel/out" \
             ARCH=arm64 CC=clang LD=ld.lld LLVM=1 LLVM_IAS=1 \
-            KBUILD_EXTRA_SYMBOLS="$CFG80211_SYMVERS" \
+            KBUILD_EXTRA_SYMBOLS="$EXTRA_SYMVERS" \
             M="$GITHUB_WORKSPACE/wonder_mosey" modules
 
           strings "$GITHUB_WORKSPACE/wonder_mosey/wonder_mosey.ko" | grep '^vermagic='
