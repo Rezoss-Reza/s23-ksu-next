@@ -4,6 +4,12 @@ on:
   #schedule:
     #- cron: '0 4 * * *'  # Runs every day at 04:00 UTC
   workflow_dispatch: # Allow manual trigger if needed
+    inputs:
+      wonder_auto_load:
+        description: "Package wonder_mosey with auto_load marker"
+        required: false
+        type: boolean
+        default: false
   #push:
     
 jobs:
@@ -123,6 +129,1041 @@ jobs:
           chmod +x scripts/build.sh
           ./scripts/build.sh 2>&1 | tee "$GITHUB_WORKSPACE/build.log"
 
+      - name: Prepare wonder_mosey source
+        run: |
+          set -euxo pipefail
+          rm -rf wonder_mosey
+          mkdir -p wonder_mosey/module
+          cat > wonder_mosey/Kbuild <<'__WONDER_MOSEY_KBUILD__'
+          obj-m += wonder_mosey.o
+          
+          ccflags-y += -Wno-declaration-after-statement
+          __WONDER_MOSEY_KBUILD__
+          cat > wonder_mosey/Makefile <<'__WONDER_MOSEY_MAKEFILE__'
+          KERNEL_DIR ?= ../kernel
+          OUT_DIR ?= $(KERNEL_DIR)/out
+          ARCH ?= arm64
+          LLVM ?= 1
+          LLVM_IAS ?= 1
+          CC ?= clang
+          LD ?= ld.lld
+          
+          .PHONY: all clean
+          
+          all:
+          	$(MAKE) -C "$(KERNEL_DIR)" O="$(OUT_DIR)" ARCH=$(ARCH) CC=$(CC) LD=$(LD) \
+          		LLVM=$(LLVM) LLVM_IAS=$(LLVM_IAS) M="$(CURDIR)" modules
+          
+          clean:
+          	$(MAKE) -C "$(KERNEL_DIR)" O="$(OUT_DIR)" ARCH=$(ARCH) CC=$(CC) LD=$(LD) \
+          		LLVM=$(LLVM) LLVM_IAS=$(LLVM_IAS) M="$(CURDIR)" clean
+          __WONDER_MOSEY_MAKEFILE__
+          cat > wonder_mosey/module/README.txt <<'__WONDER_MOSEY_MODULE_README_TXT__'
+          S23U Virtual Wonder Mosey Module
+          
+          Purpose:
+          - Provide a fake cfg80211 wiphy named "wonder".
+          - Allow Mosey to create "wonder0" with NL80211_CMD_NEW_INTERFACE.
+          - Handle Google/Samsung Wonder vendor OUI 0x001A11 subcommands 1,2,3,4,5,6,7,8,9,10,11,15.
+          - Let PF_PACKET bind/open on wonder0.
+          
+          Hard limit:
+          - This has no real 802.11 RF, no AWDL RF, and no real proximity scan.
+          - Packet TX on wonder0 is counted and dropped.
+          - This is only for testing whether Mosey/GMS init gates can be passed without breaking wlan0.
+          
+          Install:
+          - Flash S23U_Virtual_Wonder_Mosey_Module.zip in Magisk/KSU.
+          - Reboot.
+          - Workflow-built zips install as manual-load only by default.
+          - If wonder_auto_load=true is selected in GitHub Actions, the zip includes the auto_load marker.
+          
+          Manual test:
+            adb shell su -c 'insmod /data/adb/modules/s23u_virtual_wonder_mosey/system/vendor_dlkm/lib/modules/wonder_mosey.ko phy_name=wonder ifname=wonder0 verbose=1'
+            adb shell su -c 'ls -l /sys/class/ieee80211; ls -l /sys/class/net/wonder0'
+            adb shell su -c 'dmesg | grep -i wonder_mosey | tail -80'
+          
+          Unload:
+            adb shell su -c 'rmmod wonder_mosey'
+          
+          Enable autoload:
+            adb shell su -c 'touch /data/adb/modules/s23u_virtual_wonder_mosey/auto_load'
+            adb reboot
+          
+          Autoload timing:
+          - When auto_load exists, post-fs-data.sh tries to load wonder_mosey before Android's later boot actions.
+          - This is meant for ROM builds where /vendor/etc/init/mosey.rc starts mosey_server on boot.
+          - service.sh still retries/logs after boot if early load did not happen.
+          
+          Disable autoload:
+            adb shell su -c 'rm /data/adb/modules/s23u_virtual_wonder_mosey/auto_load'
+            adb reboot
+          
+          GitHub Action build note:
+          - plain_build.yml builds wonder_mosey.ko after the kernel build using the same kernel/out directory.
+          - The workflow prints the embedded vermagic line with:
+            strings wonder_mosey/wonder_mosey.ko | grep '^vermagic='
+          - If insmod fails with unknown cfg80211 symbols, rebuild from the same kernel output that produced the booted kernel and vendor_dlkm.
+          - If insmod fails with Exec format/vermagic, the module was not built against the exact booted kernel release.
+          __WONDER_MOSEY_MODULE_README_TXT__
+          cat > wonder_mosey/module/customize.sh <<'__WONDER_MOSEY_MODULE_CUSTOMIZE_SH__'
+          SKIPUNZIP=0
+          
+          ui_print "- S23U Virtual Wonder Mosey"
+          ui_print "- Manual-load by default unless auto_load marker is packaged or created"
+          ui_print "- Auto-load is controlled by /data/adb/modules/s23u_virtual_wonder_mosey/auto_load"
+          ui_print "- Disable the module or remove auto_load if this breaks Wi-Fi/boot"
+          __WONDER_MOSEY_MODULE_CUSTOMIZE_SH__
+          cat > wonder_mosey/module/module.prop <<'__WONDER_MOSEY_MODULE_MODULE_PROP__'
+          id=s23u_virtual_wonder_mosey
+          name=S23U Virtual Wonder Mosey
+          version=0.1-experimental
+          versionCode=1
+          author=Rezoss
+          description=Virtual Wonder cfg80211 interface for Mosey init experiments. Manual-load by default. No real 802.11 RF.
+          __WONDER_MOSEY_MODULE_MODULE_PROP__
+          cat > wonder_mosey/module/post-fs-data.sh <<'__WONDER_MOSEY_MODULE_POST_FS_DATA_SH__'
+          #!/system/bin/sh
+          MODDIR=${0%/*}
+          LOG=/data/local/tmp/s23u_virtual_wonder_mosey.log
+          KO="$MODDIR/system/vendor_dlkm/lib/modules/wonder_mosey.ko"
+          
+          [ -f "$MODDIR/auto_load" ] || exit 0
+          
+          {
+            echo "===== S23U Virtual Wonder Mosey post-fs-data $(date) ====="
+            echo "kernel: $(uname -a)"
+            echo "module: $KO"
+          
+            if grep -q '^wonder_mosey ' /proc/modules; then
+              echo "wonder_mosey already loaded"
+              exit 0
+            fi
+          
+            i=0
+            while [ "$i" -lt 20 ]; do
+              grep -q '^cfg80211 ' /proc/modules && break
+              sleep 1
+              i=$((i + 1))
+            done
+          
+            grep -E '^(wonder_mosey|cfg80211|mac80211|kiwi_v2) ' /proc/modules
+          
+            if [ -f "$KO" ]; then
+              RUNNING_RELEASE="$(uname -r)"
+              MODULE_RELEASE="$(tr '\000' '\n' < "$KO" 2>/dev/null | sed -n 's/^vermagic=\([^ ]*\).*/\1/p' | head -n 1)"
+              echo "running release: $RUNNING_RELEASE"
+              echo "module release: ${MODULE_RELEASE:-unknown}"
+              if [ -z "$MODULE_RELEASE" ] || [ "$MODULE_RELEASE" != "$RUNNING_RELEASE" ]; then
+                echo "vermagic release mismatch; skipping early insmod"
+                exit 0
+              fi
+              echo "auto_load marker present; running early insmod"
+              insmod "$KO" phy_name=wonder ifname=wonder0
+              echo "insmod rc=$?"
+            else
+              echo "missing $KO"
+            fi
+          
+            ls -l /sys/class/ieee80211 2>/dev/null
+            ls -l /sys/class/net/wonder0 2>/dev/null
+          } >> "$LOG" 2>&1
+          
+          exit 0
+          __WONDER_MOSEY_MODULE_POST_FS_DATA_SH__
+          cat > wonder_mosey/module/service.sh <<'__WONDER_MOSEY_MODULE_SERVICE_SH__'
+          #!/system/bin/sh
+          MODDIR=${0%/*}
+          LOG=/data/local/tmp/s23u_virtual_wonder_mosey.log
+          KO="$MODDIR/system/vendor_dlkm/lib/modules/wonder_mosey.ko"
+          
+          {
+            echo "===== S23U Virtual Wonder Mosey $(date) ====="
+            echo "kernel: $(uname -a)"
+            echo "module: $KO"
+            echo "--- pre state ---"
+            grep -E '^(wonder_mosey|cfg80211|mac80211|kiwi_v2) ' /proc/modules
+            ls -l /sys/class/ieee80211 2>/dev/null
+            ls -l /sys/class/net/wlan0 /sys/class/net/wonder0 /sys/class/net/mosey0 2>/dev/null
+          
+            if [ -f "$MODDIR/auto_load" ]; then
+              if grep -q '^wonder_mosey ' /proc/modules; then
+                echo "wonder_mosey already loaded"
+              elif [ -f "$KO" ]; then
+                RUNNING_RELEASE="$(uname -r)"
+                MODULE_RELEASE="$(tr '\000' '\n' < "$KO" 2>/dev/null | sed -n 's/^vermagic=\([^ ]*\).*/\1/p' | head -n 1)"
+                echo "running release: $RUNNING_RELEASE"
+                echo "module release: ${MODULE_RELEASE:-unknown}"
+                if [ -z "$MODULE_RELEASE" ] || [ "$MODULE_RELEASE" != "$RUNNING_RELEASE" ]; then
+                  echo "vermagic release mismatch; skipping insmod"
+                else
+                  echo "auto_load marker present; running insmod"
+                  insmod "$KO" phy_name=wonder ifname=wonder0
+                  echo "insmod rc=$?"
+                fi
+              else
+                echo "missing $KO"
+              fi
+            else
+              echo "auto_load marker absent; not loading module"
+              echo "manual command:"
+              echo "  su -c 'insmod $KO phy_name=wonder ifname=wonder0 verbose=1'"
+            fi
+          
+            sleep 1
+            echo "--- post state ---"
+            grep -E '^(wonder_mosey|cfg80211|mac80211|kiwi_v2) ' /proc/modules
+            ls -l /sys/class/ieee80211 2>/dev/null
+            ls -l /sys/class/net/wlan0 /sys/class/net/wonder0 /sys/class/net/mosey0 2>/dev/null
+            echo "--- dmesg tail ---"
+            dmesg | grep -iE 'wonder_mosey|cfg80211|vermagic|exec format|unknown symbol' | tail -n 120
+            echo
+          } >> "$LOG" 2>&1
+          
+          exit 0
+          __WONDER_MOSEY_MODULE_SERVICE_SH__
+          cat > wonder_mosey/module/uninstall.sh <<'__WONDER_MOSEY_MODULE_UNINSTALL_SH__'
+          #!/system/bin/sh
+          rmmod wonder_mosey 2>/dev/null
+          exit 0
+          __WONDER_MOSEY_MODULE_UNINSTALL_SH__
+          cat > wonder_mosey/wonder_mosey.c <<'__WONDER_MOSEY_WONDER_MOSEY_C__'
+          // SPDX-License-Identifier: GPL-2.0-only
+          /*
+           * Minimal virtual Wonder radio for Samsung/Google Mosey experiments.
+           *
+           * This intentionally provides only cfg80211/nl80211 control-plane behavior.
+           * It has no real 802.11 RF path. Packet TX on wonder0 is counted and dropped.
+           */
+          
+          #define pr_fmt(fmt) "wonder_mosey: " fmt
+          
+          #include <linux/atomic.h>
+          #include <linux/etherdevice.h>
+          #include <linux/if_arp.h>
+          #include <linux/if_ether.h>
+          #include <linux/limits.h>
+          #include <linux/module.h>
+          #include <linux/netdevice.h>
+          #include <linux/nl80211.h>
+          #include <linux/skbuff.h>
+          #include <linux/string.h>
+          #include <linux/timekeeping.h>
+          #include <linux/version.h>
+          #include <net/cfg80211.h>
+          #include <net/netlink.h>
+          #include <net/rtnetlink.h>
+          
+          #define WM_DRIVER_NAME "wonder_mosey"
+          #define WM_WIPHY_NAME "wonder"
+          #define WM_IFACE_NAME "wonder0"
+          #define WM_VENDOR_ID 0x001A11
+          #define WM_NORMAL_MTU 8000
+          
+          enum wm_vendor_subcmd {
+          	WM_VEN_SUBCMD_SET_FREQUENCY = 0x1,
+          	WM_VEN_SUBCMD_SET_FILTER = 0x2,
+          	WM_VEN_SUBCMD_SET_FIXED_TX_RATE = 0x3,
+          	WM_VEN_SUBCMD_SET_REGULATORY = 0x4,
+          	WM_VEN_SUBCMD_GET_IF_MAC_ADDR = 0x5,
+          	WM_VEN_SUBCMD_SET_CHANNEL_SCHEDULE_REQ = 0x6,
+          	WM_VEN_SUBCMD_GET_MAC_TSF = 0x7,
+          	WM_VEN_SUBCMD_GET_CAP = 0x8,
+          	WM_VEN_SUBCMD_GET_CHANNEL_STATUS_REPORT = 0x9,
+          	WM_VEN_SUBCMD_SET_STATION_INFO = 0xA,
+          	WM_VEN_SUBCMD_SET_FEATURES = 0xB,
+          	WM_VEN_SUBCMD_SET_TX_RATE_TEST = 0xF,
+          };
+          
+          enum wm_vendor_channel_attr {
+          	WM_VEN_ATTR_CHANNEL_UNSPEC,
+          	WM_VEN_ATTR_CHANNEL_FREQ,
+          	WM_VEN_ATTR_CHANNEL_BANDWIDTH,
+          };
+          
+          enum wm_vendor_if_addr_attr {
+          	WM_VEN_ATTR_IF_ADDR_UNSPEC,
+          	WM_VEN_ATTR_IF_ADDR_MAC_ADDR,
+          };
+          
+          enum wm_vendor_cap_attr {
+          	WM_VEN_ATTR_CAP_UNSPEC,
+          	WM_VEN_ATTR_CAP_MTU,
+          	WM_VEN_ATTR_CAP_HW_AMSDU,
+          	WM_VEN_ATTR_CAP_HW_AMPDU,
+          	WM_VEN_ATTR_CAP_CH_HOPPING,
+          	WM_VEN_ATTR_CAP_HBS_SUPPORT,
+          	WM_VEN_ATTR_CAP_NSS,
+          };
+          
+          enum wm_vendor_mac_tsf_attr {
+          	WM_VEN_ATTR_MAC_TSF_UNSPEC,
+          	WM_VEN_ATTR_MAC_TSF,
+          	WM_VEN_ATTR_MAC_TSF_SYS_TIME_BEFORE,
+          	WM_VEN_ATTR_MAC_TSF_SYS_TIME_AFTER,
+          };
+          
+          enum wm_vendor_channel_status_report_attr {
+          	WM_VEN_ATTR_CH_STATUS_REPORT_UNSPEC,
+          	WM_VEN_ATTR_CH_STATUS_REPORT_REQ_TSF,
+          	WM_VEN_ATTR_CH_STATUS_REPORT_CUR_IDX,
+          	WM_VEN_ATTR_CH_STATUS_REPORT_LEN,
+          	WM_VEN_ATTR_CH_STATUS_REPORT_LIST,
+          };
+          
+          static char phy_name[IFNAMSIZ] = WM_WIPHY_NAME;
+          module_param_string(phy_name, phy_name, sizeof(phy_name), 0444);
+          MODULE_PARM_DESC(phy_name, "cfg80211 wiphy name exposed to Mosey");
+          
+          static char ifname[IFNAMSIZ] = WM_IFACE_NAME;
+          module_param_string(ifname, ifname, sizeof(ifname), 0444);
+          MODULE_PARM_DESC(ifname, "fallback netdev name for the virtual monitor interface");
+          
+          static char mac_addr[3 * ETH_ALEN] = "6a:b0:5d:c7:27:3d";
+          module_param_string(mac_addr, mac_addr, sizeof(mac_addr), 0444);
+          MODULE_PARM_DESC(mac_addr, "locally-administered MAC returned by Wonder vendor command 5");
+          
+          static bool precreate_iface;
+          module_param(precreate_iface, bool, 0444);
+          MODULE_PARM_DESC(precreate_iface, "create wonder0 at module load instead of waiting for NL80211_CMD_NEW_INTERFACE");
+          
+          static bool verbose;
+          module_param(verbose, bool, 0644);
+          MODULE_PARM_DESC(verbose, "log every vendor command");
+          
+          static uint phy_index = UINT_MAX;
+          module_param(phy_index, uint, 0444);
+          MODULE_PARM_DESC(phy_index, "unused placeholder; wiphy is registered directly as named phy");
+          
+          struct wm_state;
+          
+          struct wm_vif {
+          	struct wireless_dev wdev;
+          	struct net_device *netdev;
+          	struct wm_state *wm;
+          	atomic64_t tx_packets;
+          	atomic64_t tx_bytes;
+          };
+          
+          struct wm_state {
+          	struct wiphy *wiphy;
+          	struct wm_vif *vif;
+          	struct cfg80211_chan_def chandef;
+          	u8 mac[ETH_ALEN];
+          	atomic64_t vendor_cmds;
+          	atomic64_t nan_cookie;
+          };
+          
+          static struct wm_state *wm_global;
+          
+          static struct ieee80211_channel wm_2ghz_channels[] = {
+          	{
+          		.band = NL80211_BAND_2GHZ,
+          		.center_freq = 2437,
+          		.hw_value = 6,
+          		.max_power = 20,
+          	},
+          };
+          
+          static struct ieee80211_rate wm_2ghz_rates[] = {
+          	{ .bitrate = 10 },
+          	{ .bitrate = 20 },
+          	{ .bitrate = 55 },
+          	{ .bitrate = 110 },
+          	{ .bitrate = 60 },
+          	{ .bitrate = 120 },
+          	{ .bitrate = 240 },
+          };
+          
+          static struct ieee80211_supported_band wm_2ghz_band = {
+          	.channels = wm_2ghz_channels,
+          	.n_channels = ARRAY_SIZE(wm_2ghz_channels),
+          	.bitrates = wm_2ghz_rates,
+          	.n_bitrates = ARRAY_SIZE(wm_2ghz_rates),
+          	.band = NL80211_BAND_2GHZ,
+          };
+          
+          static struct ieee80211_channel wm_5ghz_channels[] = {
+          	{
+          		.band = NL80211_BAND_5GHZ,
+          		.center_freq = 5745,
+          		.hw_value = 149,
+          		.max_power = 20,
+          	},
+          };
+          
+          static struct ieee80211_rate wm_5ghz_rates[] = {
+          	{ .bitrate = 60 },
+          	{ .bitrate = 120 },
+          	{ .bitrate = 240 },
+          };
+          
+          static struct ieee80211_supported_band wm_5ghz_band = {
+          	.channels = wm_5ghz_channels,
+          	.n_channels = ARRAY_SIZE(wm_5ghz_channels),
+          	.bitrates = wm_5ghz_rates,
+          	.n_bitrates = ARRAY_SIZE(wm_5ghz_rates),
+          	.band = NL80211_BAND_5GHZ,
+          };
+          
+          static const struct ieee80211_iface_limit wm_iface_limits[] = {
+          	{
+          		.max = 1,
+          		.types = BIT(NL80211_IFTYPE_MONITOR) |
+          			 BIT(NL80211_IFTYPE_NAN) |
+          			 BIT(NL80211_IFTYPE_STATION) |
+          			 BIT(NL80211_IFTYPE_ADHOC),
+          	},
+          };
+          
+          static const struct ieee80211_iface_combination wm_iface_combinations[] = {
+          	{
+          		.limits = wm_iface_limits,
+          		.n_limits = ARRAY_SIZE(wm_iface_limits),
+          		.max_interfaces = 1,
+          		.num_different_channels = 1,
+          	},
+          };
+          
+          static int wm_open(struct net_device *dev)
+          {
+          	netif_carrier_on(dev);
+          	netif_start_queue(dev);
+          	return 0;
+          }
+          
+          static int wm_stop(struct net_device *dev)
+          {
+          	netif_stop_queue(dev);
+          	netif_carrier_off(dev);
+          	return 0;
+          }
+          
+          static netdev_tx_t wm_start_xmit(struct sk_buff *skb, struct net_device *dev)
+          {
+          	struct wm_vif *vif = netdev_priv(dev);
+          
+          	atomic64_inc(&vif->tx_packets);
+          	atomic64_add(skb->len, &vif->tx_bytes);
+          	dev_consume_skb_any(skb);
+          	return NETDEV_TX_OK;
+          }
+          
+          static void wm_get_stats64(struct net_device *dev, struct rtnl_link_stats64 *stats)
+          {
+          	struct wm_vif *vif = netdev_priv(dev);
+          
+          	stats->tx_packets = atomic64_read(&vif->tx_packets);
+          	stats->tx_bytes = atomic64_read(&vif->tx_bytes);
+          }
+          
+          static const struct net_device_ops wm_netdev_ops = {
+          	.ndo_open = wm_open,
+          	.ndo_stop = wm_stop,
+          	.ndo_start_xmit = wm_start_xmit,
+          	.ndo_get_stats64 = wm_get_stats64,
+          };
+          
+          static void wm_netdev_setup(struct net_device *dev)
+          {
+          	ether_setup(dev);
+          	dev->netdev_ops = &wm_netdev_ops;
+          	dev->type = ARPHRD_IEEE80211_RADIOTAP;
+          	dev->header_ops = NULL;
+          	dev->hard_header_len = 0;
+          	dev->needed_headroom = 0;
+          	dev->addr_len = ETH_ALEN;
+          	dev->mtu = WM_NORMAL_MTU;
+          	dev->min_mtu = 0;
+          	dev->max_mtu = INT_MAX;
+          	dev->tx_queue_len = 1024;
+          	dev->flags |= IFF_NOARP;
+          	dev->features |= NETIF_F_LLTX;
+          	dev->needs_free_netdev = true;
+          }
+          
+          static int wm_register_vif(struct wm_state *wm, const char *name,
+          			   unsigned char name_assign_type,
+          			   enum nl80211_iftype type,
+          			   struct wireless_dev **out_wdev)
+          {
+          	struct net_device *dev;
+          	struct wm_vif *vif;
+          	const char *devname = (name && name[0]) ? name : ifname;
+          	int ret;
+          
+          	if (wm->vif)
+          		return -EBUSY;
+          
+          	if (type != NL80211_IFTYPE_MONITOR &&
+          	    type != NL80211_IFTYPE_NAN &&
+          	    type != NL80211_IFTYPE_STATION &&
+          	    type != NL80211_IFTYPE_ADHOC)
+          		return -EOPNOTSUPP;
+          
+          	dev = alloc_netdev(sizeof(*vif), devname, name_assign_type,
+          			   wm_netdev_setup);
+          	if (!dev)
+          		return -ENOMEM;
+          
+          	vif = netdev_priv(dev);
+          	vif->wm = wm;
+          	vif->netdev = dev;
+          	vif->wdev.wiphy = wm->wiphy;
+          	vif->wdev.netdev = dev;
+          	vif->wdev.iftype = type;
+          	dev->ieee80211_ptr = &vif->wdev;
+          	eth_hw_addr_set(dev, wm->mac);
+          
+          	if (wiphy_dev(wm->wiphy))
+          		SET_NETDEV_DEV(dev, wiphy_dev(wm->wiphy));
+          
+          	ret = cfg80211_register_netdevice(dev);
+          	if (ret) {
+          		free_netdev(dev);
+          		return ret;
+          	}
+          
+          	wm->vif = vif;
+          	netif_carrier_off(dev);
+          
+          	if (out_wdev)
+          		*out_wdev = &vif->wdev;
+          
+          	pr_info("created %s iftype=%u mac=%pM\n", dev->name, type, wm->mac);
+          	return 0;
+          }
+          
+          static struct wireless_dev *
+          wm_add_virtual_intf(struct wiphy *wiphy, const char *name,
+          		    unsigned char name_assign_type,
+          		    enum nl80211_iftype type, struct vif_params *params)
+          {
+          	struct wm_state *wm = wiphy_priv(wiphy);
+          	struct wireless_dev *wdev = NULL;
+          	int ret;
+          
+          	ret = wm_register_vif(wm, name, name_assign_type, type, &wdev);
+          	if (ret)
+          		return ERR_PTR(ret);
+          
+          	return wdev;
+          }
+          
+          static int wm_del_virtual_intf(struct wiphy *wiphy, struct wireless_dev *wdev)
+          {
+          	struct wm_state *wm = wiphy_priv(wiphy);
+          	struct net_device *dev;
+          
+          	if (!wdev || !wdev->netdev)
+          		return -ENODEV;
+          
+          	dev = wdev->netdev;
+          	pr_info("destroying %s\n", dev->name);
+          	wm->vif = NULL;
+          	cfg80211_unregister_netdevice(dev);
+          	return 0;
+          }
+          
+          static int wm_change_virtual_intf(struct wiphy *wiphy, struct net_device *dev,
+          				  enum nl80211_iftype type,
+          				  struct vif_params *params)
+          {
+          	if (!dev || !dev->ieee80211_ptr)
+          		return -ENODEV;
+          
+          	if (type != NL80211_IFTYPE_MONITOR &&
+          	    type != NL80211_IFTYPE_NAN &&
+          	    type != NL80211_IFTYPE_STATION &&
+          	    type != NL80211_IFTYPE_ADHOC)
+          		return -EOPNOTSUPP;
+          
+          	dev->ieee80211_ptr->iftype = type;
+          	dev->type = (type == NL80211_IFTYPE_MONITOR) ?
+          		    ARPHRD_IEEE80211_RADIOTAP : ARPHRD_ETHER;
+          	return 0;
+          }
+          
+          static int wm_set_monitor_channel(struct wiphy *wiphy,
+          				  struct cfg80211_chan_def *chandef)
+          {
+          	struct wm_state *wm = wiphy_priv(wiphy);
+          
+          	if (!chandef || !chandef->chan)
+          		return -EINVAL;
+          
+          	wm->chandef = *chandef;
+          	if (verbose)
+          		pr_info("set monitor channel freq=%u width=%u\n",
+          			chandef->chan->center_freq, chandef->width);
+          	return 0;
+          }
+          
+          static int wm_get_channel(struct wiphy *wiphy, struct wireless_dev *wdev,
+          #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 209)
+          			  unsigned int link_id,
+          #endif
+          			  struct cfg80211_chan_def *chandef)
+          {
+          	struct wm_state *wm = wiphy_priv(wiphy);
+          
+          #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 209)
+          	(void)link_id;
+          #endif
+          	*chandef = wm->chandef;
+          	return 0;
+          }
+          
+          static int wm_start_nan(struct wiphy *wiphy, struct wireless_dev *wdev,
+          			struct cfg80211_nan_conf *conf)
+          {
+          	if (verbose)
+          		pr_info("start NAN\n");
+          	return 0;
+          }
+          
+          static void wm_stop_nan(struct wiphy *wiphy, struct wireless_dev *wdev)
+          {
+          	if (verbose)
+          		pr_info("stop NAN\n");
+          }
+          
+          static int wm_add_nan_func(struct wiphy *wiphy, struct wireless_dev *wdev,
+          			   struct cfg80211_nan_func *nan_func)
+          {
+          	struct wm_state *wm = wiphy_priv(wiphy);
+          	u64 cookie = atomic64_inc_return(&wm->nan_cookie);
+          
+          	if (!nan_func)
+          		return -EINVAL;
+          
+          	nan_func->instance_id = (u8)(cookie & 0xff);
+          	nan_func->cookie = cookie;
+          	if (verbose)
+          		pr_info("add NAN func cookie=%llu instance=%u\n",
+          			cookie, nan_func->instance_id);
+          
+          	cfg80211_free_nan_func(nan_func);
+          	return 0;
+          }
+          
+          static void wm_del_nan_func(struct wiphy *wiphy, struct wireless_dev *wdev,
+          			    u64 cookie)
+          {
+          	if (verbose)
+          		pr_info("del NAN func cookie=%llu\n", cookie);
+          }
+          
+          static int wm_nan_change_conf(struct wiphy *wiphy, struct wireless_dev *wdev,
+          			      struct cfg80211_nan_conf *conf, u32 changes)
+          {
+          	if (verbose)
+          		pr_info("change NAN conf changes=0x%x\n", changes);
+          	return 0;
+          }
+          
+          static int wm_vendor_simple_ok(struct wiphy *wiphy, struct wireless_dev *wdev,
+          			       const void *data, int data_len)
+          {
+          	struct wm_state *wm = wiphy_priv(wiphy);
+          
+          	atomic64_inc(&wm->vendor_cmds);
+          	return 0;
+          }
+          
+          static int wm_vendor_set_frequency(struct wiphy *wiphy,
+          				   struct wireless_dev *wdev,
+          				   const void *data, int data_len)
+          {
+          	struct wm_state *wm = wiphy_priv(wiphy);
+          	struct nlattr *attr;
+          	struct nlattr *head = (struct nlattr *)data;
+          	int rem;
+          
+          	atomic64_inc(&wm->vendor_cmds);
+          
+          	nla_for_each_attr(attr, head, data_len, rem) {
+          		if (nla_type(attr) == WM_VEN_ATTR_CHANNEL_FREQ &&
+          		    nla_len(attr) >= sizeof(u32)) {
+          			u32 freq = nla_get_u32(attr);
+          
+          			if (freq == 2437)
+          				wm->chandef.chan = &wm_2ghz_channels[0];
+          			else
+          				wm->chandef.chan = &wm_5ghz_channels[0];
+          			wm->chandef.center_freq1 = freq;
+          		}
+          	}
+          
+          	if (verbose)
+          		pr_info("vendor set_frequency len=%d center=%u\n",
+          			data_len, wm->chandef.center_freq1);
+          	return 0;
+          }
+          
+          static int wm_vendor_get_if_mac_addr(struct wiphy *wiphy,
+          				     struct wireless_dev *wdev,
+          				     const void *data, int data_len)
+          {
+          	struct wm_state *wm = wiphy_priv(wiphy);
+          	struct sk_buff *skb;
+          
+          	atomic64_inc(&wm->vendor_cmds);
+          
+          	skb = cfg80211_vendor_cmd_alloc_reply_skb(wiphy,
+          						  nla_total_size(ETH_ALEN));
+          	if (!skb)
+          		return -ENOMEM;
+          
+          	if (nla_put(skb, WM_VEN_ATTR_IF_ADDR_MAC_ADDR, ETH_ALEN, wm->mac)) {
+          		kfree_skb(skb);
+          		return -EMSGSIZE;
+          	}
+          
+          	if (verbose)
+          		pr_info("vendor get_if_mac_addr -> %pM\n", wm->mac);
+          	return cfg80211_vendor_cmd_reply(skb);
+          }
+          
+          static int wm_vendor_get_cap(struct wiphy *wiphy, struct wireless_dev *wdev,
+          			     const void *data, int data_len)
+          {
+          	struct wm_state *wm = wiphy_priv(wiphy);
+          	struct sk_buff *skb;
+          	u32 mtu = (wdev && wdev->iftype == NL80211_IFTYPE_MONITOR) ?
+          		  INT_MAX : WM_NORMAL_MTU;
+          	u8 zero = 0;
+          	u8 one = 1;
+          
+          	atomic64_inc(&wm->vendor_cmds);
+          
+          	skb = cfg80211_vendor_cmd_alloc_reply_skb(wiphy,
+          		nla_total_size(sizeof(u32)) + nla_total_size(sizeof(u8)) * 5);
+          	if (!skb)
+          		return -ENOMEM;
+          
+          	if (nla_put_u32(skb, WM_VEN_ATTR_CAP_MTU, mtu) ||
+          	    nla_put(skb, WM_VEN_ATTR_CAP_HW_AMSDU, sizeof(zero), &zero) ||
+          	    nla_put(skb, WM_VEN_ATTR_CAP_HW_AMPDU, sizeof(zero), &zero) ||
+          	    nla_put(skb, WM_VEN_ATTR_CAP_CH_HOPPING, sizeof(zero), &zero) ||
+          	    nla_put(skb, WM_VEN_ATTR_CAP_HBS_SUPPORT, sizeof(zero), &zero) ||
+          	    nla_put(skb, WM_VEN_ATTR_CAP_NSS, sizeof(one), &one)) {
+          		kfree_skb(skb);
+          		return -EMSGSIZE;
+          	}
+          
+          	if (verbose)
+          		pr_info("vendor get_cap mtu=%u\n", mtu);
+          	return cfg80211_vendor_cmd_reply(skb);
+          }
+          
+          static int wm_vendor_get_mac_tsf(struct wiphy *wiphy,
+          				 struct wireless_dev *wdev,
+          				 const void *data, int data_len)
+          {
+          	struct wm_state *wm = wiphy_priv(wiphy);
+          	struct sk_buff *skb;
+          	u64 before = ktime_get_boottime_ns();
+          	u32 tsf = (u32)(before / 1000);
+          	u64 after = ktime_get_boottime_ns();
+          
+          	atomic64_inc(&wm->vendor_cmds);
+          
+          	skb = cfg80211_vendor_cmd_alloc_reply_skb(wiphy,
+          		nla_total_size(sizeof(u32)) + nla_total_size(sizeof(u64)) * 2);
+          	if (!skb)
+          		return -ENOMEM;
+          
+          	if (nla_put_u32(skb, WM_VEN_ATTR_MAC_TSF, tsf) ||
+          	    nla_put_u64_64bit(skb, WM_VEN_ATTR_MAC_TSF_SYS_TIME_BEFORE,
+          			      before, WM_VEN_ATTR_MAC_TSF_UNSPEC) ||
+          	    nla_put_u64_64bit(skb, WM_VEN_ATTR_MAC_TSF_SYS_TIME_AFTER,
+          			      after, WM_VEN_ATTR_MAC_TSF_UNSPEC)) {
+          		kfree_skb(skb);
+          		return -EMSGSIZE;
+          	}
+          
+          	if (verbose)
+          		pr_info("vendor get_mac_tsf tsf=%u\n", tsf);
+          	return cfg80211_vendor_cmd_reply(skb);
+          }
+          
+          static int wm_vendor_get_channel_status_report(struct wiphy *wiphy,
+          					       struct wireless_dev *wdev,
+          					       const void *data, int data_len)
+          {
+          	struct wm_state *wm = wiphy_priv(wiphy);
+          	struct sk_buff *skb;
+          	struct nlattr *list;
+          	u32 tsf = (u32)(ktime_get_boottime_ns() / 1000);
+          
+          	atomic64_inc(&wm->vendor_cmds);
+          
+          	skb = cfg80211_vendor_cmd_alloc_reply_skb(wiphy,
+          		nla_total_size(sizeof(u32)) * 3 + nla_total_size(0));
+          	if (!skb)
+          		return -ENOMEM;
+          
+          	if (nla_put_u32(skb, WM_VEN_ATTR_CH_STATUS_REPORT_REQ_TSF, tsf) ||
+          	    nla_put_u32(skb, WM_VEN_ATTR_CH_STATUS_REPORT_CUR_IDX, 0) ||
+          	    nla_put_u32(skb, WM_VEN_ATTR_CH_STATUS_REPORT_LEN, 0))
+          		goto nla_fail;
+          
+          	list = nla_nest_start(skb, WM_VEN_ATTR_CH_STATUS_REPORT_LIST);
+          	if (!list)
+          		goto nla_fail;
+          	nla_nest_end(skb, list);
+          
+          	if (verbose)
+          		pr_info("vendor get_channel_status_report empty\n");
+          	return cfg80211_vendor_cmd_reply(skb);
+          
+          nla_fail:
+          	kfree_skb(skb);
+          	return -EMSGSIZE;
+          }
+          
+          static const struct wiphy_vendor_command wm_vendor_cmds[] = {
+          	{
+          		.info = { .vendor_id = WM_VENDOR_ID, .subcmd = WM_VEN_SUBCMD_SET_FREQUENCY },
+          		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
+          		.doit = wm_vendor_set_frequency,
+          		.policy = VENDOR_CMD_RAW_DATA,
+          	},
+          	{
+          		.info = { .vendor_id = WM_VENDOR_ID, .subcmd = WM_VEN_SUBCMD_SET_FILTER },
+          		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
+          		.doit = wm_vendor_simple_ok,
+          		.policy = VENDOR_CMD_RAW_DATA,
+          	},
+          	{
+          		.info = { .vendor_id = WM_VENDOR_ID, .subcmd = WM_VEN_SUBCMD_SET_FIXED_TX_RATE },
+          		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
+          		.doit = wm_vendor_simple_ok,
+          		.policy = VENDOR_CMD_RAW_DATA,
+          	},
+          	{
+          		.info = { .vendor_id = WM_VENDOR_ID, .subcmd = WM_VEN_SUBCMD_SET_TX_RATE_TEST },
+          		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
+          		.doit = wm_vendor_simple_ok,
+          		.policy = VENDOR_CMD_RAW_DATA,
+          	},
+          	{
+          		.info = { .vendor_id = WM_VENDOR_ID, .subcmd = WM_VEN_SUBCMD_SET_REGULATORY },
+          		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
+          		.doit = wm_vendor_simple_ok,
+          		.policy = VENDOR_CMD_RAW_DATA,
+          	},
+          	{
+          		.info = { .vendor_id = WM_VENDOR_ID, .subcmd = WM_VEN_SUBCMD_GET_IF_MAC_ADDR },
+          		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
+          		.doit = wm_vendor_get_if_mac_addr,
+          		.policy = VENDOR_CMD_RAW_DATA,
+          	},
+          	{
+          		.info = { .vendor_id = WM_VENDOR_ID, .subcmd = WM_VEN_SUBCMD_GET_CAP },
+          		.flags = 0,
+          		.doit = wm_vendor_get_cap,
+          		.policy = VENDOR_CMD_RAW_DATA,
+          	},
+          	{
+          		.info = { .vendor_id = WM_VENDOR_ID, .subcmd = WM_VEN_SUBCMD_SET_CHANNEL_SCHEDULE_REQ },
+          		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
+          		.doit = wm_vendor_simple_ok,
+          		.policy = VENDOR_CMD_RAW_DATA,
+          	},
+          	{
+          		.info = { .vendor_id = WM_VENDOR_ID, .subcmd = WM_VEN_SUBCMD_GET_MAC_TSF },
+          		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
+          		.doit = wm_vendor_get_mac_tsf,
+          		.policy = VENDOR_CMD_RAW_DATA,
+          	},
+          	{
+          		.info = { .vendor_id = WM_VENDOR_ID, .subcmd = WM_VEN_SUBCMD_GET_CHANNEL_STATUS_REPORT },
+          		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
+          		.doit = wm_vendor_get_channel_status_report,
+          		.policy = VENDOR_CMD_RAW_DATA,
+          	},
+          	{
+          		.info = { .vendor_id = WM_VENDOR_ID, .subcmd = WM_VEN_SUBCMD_SET_STATION_INFO },
+          		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
+          		.doit = wm_vendor_simple_ok,
+          		.policy = VENDOR_CMD_RAW_DATA,
+          	},
+          	{
+          		.info = { .vendor_id = WM_VENDOR_ID, .subcmd = WM_VEN_SUBCMD_SET_FEATURES },
+          		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
+          		.doit = wm_vendor_simple_ok,
+          		.policy = VENDOR_CMD_RAW_DATA,
+          	},
+          };
+          
+          static const struct cfg80211_ops wm_cfg80211_ops = {
+          	.add_virtual_intf = wm_add_virtual_intf,
+          	.del_virtual_intf = wm_del_virtual_intf,
+          	.change_virtual_intf = wm_change_virtual_intf,
+          	.set_monitor_channel = wm_set_monitor_channel,
+          	.get_channel = wm_get_channel,
+          	.start_nan = wm_start_nan,
+          	.stop_nan = wm_stop_nan,
+          	.add_nan_func = wm_add_nan_func,
+          	.del_nan_func = wm_del_nan_func,
+          	.nan_change_conf = wm_nan_change_conf,
+          };
+          
+          static int wm_parse_mac(struct wm_state *wm)
+          {
+          	if (mac_pton(mac_addr, wm->mac) && is_valid_ether_addr(wm->mac))
+          		return 0;
+          
+          	eth_random_addr(wm->mac);
+          	pr_warn("invalid mac_addr parameter, using random %pM\n", wm->mac);
+          	return 0;
+          }
+          
+          static int __init wm_init(void)
+          {
+          	struct wm_state *wm;
+          	struct wiphy *wiphy;
+          	int ret;
+          
+          	wiphy = wiphy_new_nm(&wm_cfg80211_ops, sizeof(*wm), phy_name);
+          	if (!wiphy)
+          		return -ENOMEM;
+          
+          	wm = wiphy_priv(wiphy);
+          	wm->wiphy = wiphy;
+          	atomic64_set(&wm->vendor_cmds, 0);
+          	atomic64_set(&wm->nan_cookie, 0);
+          	wm_parse_mac(wm);
+          
+          	ether_addr_copy(wiphy->perm_addr, wm->mac);
+          	wiphy->bands[NL80211_BAND_2GHZ] = &wm_2ghz_band;
+          	wiphy->bands[NL80211_BAND_5GHZ] = &wm_5ghz_band;
+          	wiphy->interface_modes = BIT(NL80211_IFTYPE_MONITOR) |
+          				 BIT(NL80211_IFTYPE_NAN) |
+          				 BIT(NL80211_IFTYPE_STATION) |
+          				 BIT(NL80211_IFTYPE_ADHOC);
+          	wiphy->software_iftypes = wiphy->interface_modes;
+          	wiphy->iface_combinations = wm_iface_combinations;
+          	wiphy->n_iface_combinations = ARRAY_SIZE(wm_iface_combinations);
+          	wiphy->nan_supported_bands = BIT(NL80211_BAND_2GHZ);
+          	wiphy->signal_type = CFG80211_SIGNAL_TYPE_MBM;
+          	wiphy->max_scan_ssids = 0;
+          	wiphy->max_sched_scan_reqs = 0;
+          	wiphy->max_remain_on_channel_duration = 1000;
+          	wiphy->vendor_commands = wm_vendor_cmds;
+          	wiphy->n_vendor_commands = ARRAY_SIZE(wm_vendor_cmds);
+          
+          	cfg80211_chandef_create(&wm->chandef, &wm_5ghz_channels[0],
+          				NL80211_CHAN_HT20);
+          
+          	ret = wiphy_register(wiphy);
+          	if (ret) {
+          		wiphy_free(wiphy);
+          		return ret;
+          	}
+          
+          	wm_global = wm;
+          	pr_info("registered wiphy=%s mac=%pM precreate=%d\n",
+          		wiphy_name(wiphy), wm->mac, precreate_iface);
+          
+          	if (precreate_iface) {
+          		rtnl_lock();
+          		wiphy_lock(wiphy);
+          		ret = wm_register_vif(wm, ifname, NET_NAME_USER,
+          				      NL80211_IFTYPE_MONITOR, NULL);
+          		wiphy_unlock(wiphy);
+          		rtnl_unlock();
+          		if (ret) {
+          			pr_err("failed to precreate %s: %d\n", ifname, ret);
+          			wiphy_unregister(wiphy);
+          			wiphy_free(wiphy);
+          			wm_global = NULL;
+          			return ret;
+          		}
+          	}
+          
+          	return 0;
+          }
+          
+          static void __exit wm_exit(void)
+          {
+          	struct wm_state *wm = wm_global;
+          	struct wiphy *wiphy;
+          
+          	if (!wm)
+          		return;
+          
+          	wiphy = wm->wiphy;
+          	if (wm->vif) {
+          		rtnl_lock();
+          		wiphy_lock(wiphy);
+          		wm_del_virtual_intf(wiphy, &wm->vif->wdev);
+          		wiphy_unlock(wiphy);
+          		rtnl_unlock();
+          	}
+          
+          	pr_info("unregistering wiphy=%s vendor_cmds=%lld\n",
+          		wiphy_name(wiphy), atomic64_read(&wm->vendor_cmds));
+          	wiphy_unregister(wiphy);
+          	wiphy_free(wiphy);
+          	wm_global = NULL;
+          }
+          
+          module_init(wm_init);
+          module_exit(wm_exit);
+          
+          MODULE_AUTHOR("Rezoss UN1CA experiment");
+          MODULE_DESCRIPTION("Minimal virtual Wonder cfg80211 module for Mosey init experiments");
+          MODULE_LICENSE("GPL");
+          MODULE_SOFTDEP("pre: cfg80211 mac80211");
+          __WONDER_MOSEY_WONDER_MOSEY_C__
+          chmod +x wonder_mosey/module/customize.sh \
+            wonder_mosey/module/post-fs-data.sh \
+            wonder_mosey/module/service.sh \
+            wonder_mosey/module/uninstall.sh
+
+      - name: Build wonder_mosey module
+        id: wonder
+        run: |
+          set -euxo pipefail
+
+          export CLANG_DIR="$HOME/tools/google-clang"
+          export PATH="$CLANG_DIR/bin:$PATH"
+          test -x "$CLANG_DIR/bin/clang"
+          test -f "$GITHUB_WORKSPACE/kernel/out/Module.symvers"
+
+          ver="$(clang --version | head -n1)"
+          ver="$(echo "$ver" | sed -E 's/\(http[^)]*\)//g; s/[[:space:]]+/ /g; s/[[:space:]]+$//')"
+          export KBUILD_COMPILER_STRING="$ver"
+
+          KERNEL_RELEASE="$(make -s -C kernel O="$GITHUB_WORKSPACE/kernel/out" \
+            ARCH=arm64 CC=clang LD=ld.lld LLVM=1 LLVM_IAS=1 kernelrelease)"
+
+          make -j"$(nproc --all)" -C kernel O="$GITHUB_WORKSPACE/kernel/out" \
+            ARCH=arm64 CC=clang LD=ld.lld LLVM=1 LLVM_IAS=1 \
+            M="$GITHUB_WORKSPACE/wonder_mosey" modules
+
+          strings "$GITHUB_WORKSPACE/wonder_mosey/wonder_mosey.ko" | grep '^vermagic='
+
+          MODULE_DIR="$GITHUB_WORKSPACE/wonder_mosey_module"
+          rm -rf "$MODULE_DIR"
+          mkdir -p "$MODULE_DIR/system/vendor_dlkm/lib/modules"
+          cp -a "$GITHUB_WORKSPACE/wonder_mosey/module/." "$MODULE_DIR/"
+          cp "$GITHUB_WORKSPACE/wonder_mosey/wonder_mosey.ko" \
+            "$MODULE_DIR/system/vendor_dlkm/lib/modules/wonder_mosey.ko"
+          sed -i "s/^version=.*/version=0.1-experimental-${KERNEL_RELEASE}/" "$MODULE_DIR/module.prop"
+          if [ "${{ inputs.wonder_auto_load || false }}" = "true" ]; then
+            touch "$MODULE_DIR/auto_load"
+          fi
+
+          ZIP_NAME="S23U_Virtual_Wonder_Mosey_Module-${KERNEL_RELEASE}-$(date +%d%m%y-%H%M%S)"
+          cd "$MODULE_DIR"
+          zip -r9 "$GITHUB_WORKSPACE/${ZIP_NAME}.zip" ./*
+          echo "zip_path=$GITHUB_WORKSPACE/${ZIP_NAME}.zip" >> "$GITHUB_OUTPUT"
+          echo "zip_name=${ZIP_NAME}" >> "$GITHUB_OUTPUT"
+
       - name: Package image with AnyKernel3
         id: package
         run: |
@@ -142,6 +1183,12 @@ jobs:
         with:
           name: ${{steps.package.outputs.zip_name}}
           path: anykernel/
+
+      - name: Upload the wonder_mosey module
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{steps.wonder.outputs.zip_name}}
+          path: ${{steps.wonder.outputs.zip_path}}
       
       - name: Create GitHub Release and upload asset
         if: github.event_name != 'pull_request'
@@ -151,6 +1198,8 @@ jobs:
           target_commitish: ${{ github.sha }}
           name: "Kernel Build by ${{ github.repository }}"
           generate_release_notes: true
-          files: ${{ steps.package.outputs.zip_path }}
+          files: |
+            ${{ steps.package.outputs.zip_path }}
+            ${{ steps.wonder.outputs.zip_path }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}   
