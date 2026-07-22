@@ -1139,11 +1139,26 @@ jobs:
           ver="$(echo "$ver" | sed -E 's/\(http[^)]*\)//g; s/[[:space:]]+/ /g; s/[[:space:]]+$//')"
           export KBUILD_COMPILER_STRING="$ver"
 
+          "$GITHUB_WORKSPACE/kernel/scripts/config" --file "$GITHUB_WORKSPACE/kernel/out/.config" -m CFG80211
+          "$GITHUB_WORKSPACE/kernel/scripts/config" --file "$GITHUB_WORKSPACE/kernel/out/.config" -d CFG80211_DEFAULT_PS
+          "$GITHUB_WORKSPACE/kernel/scripts/config" --file "$GITHUB_WORKSPACE/kernel/out/.config" -d CFG80211_CRDA_SUPPORT
+          make -C kernel O="$GITHUB_WORKSPACE/kernel/out" \
+            ARCH=arm64 CC=clang LD=ld.lld LLVM=1 LLVM_IAS=1 olddefconfig
+
           KERNEL_RELEASE="$(make -s -C kernel O="$GITHUB_WORKSPACE/kernel/out" \
             ARCH=arm64 CC=clang LD=ld.lld LLVM=1 LLVM_IAS=1 kernelrelease)"
 
           make -j"$(nproc --all)" -C kernel O="$GITHUB_WORKSPACE/kernel/out" \
             ARCH=arm64 CC=clang LD=ld.lld LLVM=1 LLVM_IAS=1 \
+            M=net/wireless modules
+
+          CFG80211_SYMVERS="$GITHUB_WORKSPACE/kernel/out/net/wireless/Module.symvers"
+          test -f "$CFG80211_SYMVERS"
+          grep -E 'cfg80211_register_netdevice|wiphy_new_nm|cfg80211_vendor_cmd_reply' "$CFG80211_SYMVERS"
+
+          make -j"$(nproc --all)" -C kernel O="$GITHUB_WORKSPACE/kernel/out" \
+            ARCH=arm64 CC=clang LD=ld.lld LLVM=1 LLVM_IAS=1 \
+            KBUILD_EXTRA_SYMBOLS="$CFG80211_SYMVERS" \
             M="$GITHUB_WORKSPACE/wonder_mosey" modules
 
           strings "$GITHUB_WORKSPACE/wonder_mosey/wonder_mosey.ko" | grep '^vermagic='
