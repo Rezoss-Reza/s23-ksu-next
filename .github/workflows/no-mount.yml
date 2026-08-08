@@ -120,6 +120,7 @@ jobs:
           path: nomount 
 
       - name: Integrate NoMount
+        run: |
            patch -p1 --fuzz=3 < "$GITHUB_WORKSPACE/nomount/kernel/nomount_5.15_kernel_integration.patch"
            cp "$GITHUB_WORKSPACE/nomount/kernel/src/*" ./fs
            echo "CONFIG_NOMOUNT=y" >> ./arch/arm64/configs/gki_defconfig
