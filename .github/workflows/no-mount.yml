@@ -1,0 +1,169 @@
+# Script github action kanged from Ivan @reddxae with little bit my modification and addition
+name: Build kernel (NoMount integration)
+on:
+  #schedule:
+    #- cron: '0 4 * * *'  # Runs every day at 04:00 UTC
+  workflow_dispatch: # Allow manual trigger if needed
+  #push:
+    
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout the repository
+        uses: actions/checkout@v4 
+
+      - name: Set up the toolchain
+        run: |
+          sudo apt update
+          sudo apt purge -y firefox
+          sudo apt-mark hold firefox
+          sudo apt upgrade -y
+          sudo apt install -y \
+          bc bison flex build-essential git curl \
+          libelf-dev libssl-dev liblz4-tool lz4 \
+          pahole dwarves cpio \
+          python3 python-is-python3 \
+          tar perl zip zlib1g-dev
+
+      - name: Clone source with Merge if needed
+        run: |
+          set -euxo pipefail
+
+          git clone --depth=1 -b android13-5.15 https://github.com/samsung-sm8550/kernel_samsung_sm8550-common.git kernel
+          #git clone --depth=1 -b android13-5.15 https://github.com/reddxae/kernel_samsung_sm8550-common-ksu.git kernel
+          cd kernel
+    
+          COMMON_REMOTE="https://android.googlesource.com/kernel/common"
+          COMMON_BRANCH="android13-5.15-lts"
+    
+          get_make_var() {
+            awk -v key="$1" '$1 == key && $2 == "=" { print $3; exit }' "$2"
+          }
+    
+          LOCAL_VERSION="$(get_make_var VERSION Makefile)"
+          LOCAL_PATCHLEVEL="$(get_make_var PATCHLEVEL Makefile)"
+          LOCAL_SUBLEVEL="$(get_make_var SUBLEVEL Makefile)"
+          LOCAL_FULL="${LOCAL_VERSION}.${LOCAL_PATCHLEVEL}.${LOCAL_SUBLEVEL}"
+    
+          UPSTREAM_MAKEFILE="$(mktemp)"
+    
+          curl -fsSL "${COMMON_REMOTE}/+/refs/heads/${COMMON_BRANCH}/Makefile?format=TEXT" \
+            | base64 -d > "$UPSTREAM_MAKEFILE"
+    
+          UPSTREAM_VERSION="$(get_make_var VERSION "$UPSTREAM_MAKEFILE")"
+          UPSTREAM_PATCHLEVEL="$(get_make_var PATCHLEVEL "$UPSTREAM_MAKEFILE")"
+          UPSTREAM_SUBLEVEL="$(get_make_var SUBLEVEL "$UPSTREAM_MAKEFILE")"
+          UPSTREAM_FULL="${UPSTREAM_VERSION}.${UPSTREAM_PATCHLEVEL}.${UPSTREAM_SUBLEVEL}"
+    
+          echo "Local kernel version:    $LOCAL_FULL"
+          echo "Android common version: $UPSTREAM_FULL"
+    
+          if [ "$LOCAL_VERSION" != "$UPSTREAM_VERSION" ] || [ "$LOCAL_PATCHLEVEL" != "$UPSTREAM_PATCHLEVEL" ]; then
+            echo "Different kernel base: local=$LOCAL_VERSION.$LOCAL_PATCHLEVEL upstream=$UPSTREAM_VERSION.$UPSTREAM_PATCHLEVEL"
+            echo "Refusing automatic merge."
+            exit 1
+          fi
+    
+          if [ "$LOCAL_SUBLEVEL" -lt "$UPSTREAM_SUBLEVEL" ]; then
+            echo "Local kernel is older. Merging ${COMMON_BRANCH}..."    
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            # Needed because clone uses --depth=1.
+            git fetch --depth=100 origin android13-5.15 || git fetch --unshallow origin android13-5.15 || true    
+            git remote add android-common "$COMMON_REMOTE" || git remote set-url android-common "$COMMON_REMOTE"
+            
+            git fetch --depth=100 --no-tags android-common "$COMMON_BRANCH"
+            echo "Checking possible merge conflicts before using -X theirs..."
+            
+            set +e
+            git merge --no-commit --no-ff FETCH_HEAD
+            TEST_MERGE_STATUS=$?
+            set -e
+            
+            if [ "$TEST_MERGE_STATUS" -ne 0 ]; then
+              echo "Normal merge would conflict in these files:"
+              git diff --name-only --diff-filter=U | while read -r file; do
+                echo "::warning::Merge conflict: $file"
+              done
+            
+              echo "Aborting test merge..."
+              git merge --abort || git reset --hard HEAD
+            else
+              echo "Normal merge has no conflicts."
+              echo "Aborting test merge before real merge..."
+              git merge --abort || git reset --hard HEAD
+            fi
+            
+            echo "Running real merge with -X ours..."
+            
+            git merge -X ours --no-edit --no-ff FETCH_HEAD || {
+              echo "::error::Merge with -X ours still failed."
+              git status --short
+              exit 1
+            }
+
+            echo "Applying LTS compilation fix patch..."
+            patch -p1 --fuzz=3 < "${GITHUB_WORKSPACE}/samsung_lts_compile_fix.patch"
+           else
+             echo "Local kernel is already same or newer. No merge needed."
+           fi
+  
+            echo "KERNEL_VERSION=$(get_make_var SUBLEVEL Makefile)" >> "$GITHUB_ENV"
+      
+      - name: Checkout nomount kernel only
+        uses: actions/checkout@v7
+        with:
+          repository: maxsteeel/nomount
+          sparse-checkout: |
+            kernel
+          path: nomount 
+
+      - name: Integrate NoMount
+           patch -p1 --fuzz=3 < "$GITHUB_WORKSPACE/nomount/kernel/nomount_5.15_kernel_integration.patch"
+           cp "$GITHUB_WORKSPACE/nomount/kernel/src/*" ./fs
+           echo "CONFIG_NOMOUNT=y" >> ./arch/arm64/configs/gki_defconfig
+        
+      - name: Set up swap space
+        uses: pierotofy/set-swap-space@master
+        with:
+          swap-size-gb: 16
+
+      - name: Build the kernel
+        run: |
+          set -euxo pipefail
+          cd kernel
+          chmod +x scripts/build.sh
+          ./scripts/build.sh 2>&1 | tee "$GITHUB_WORKSPACE/build.log"
+
+      - name: Package image with AnyKernel3
+        id: package
+        run: |
+          set -euxo pipefail
+          unzip "${GITHUB_WORKSPACE}/anykernel.zip" -d anykernel/
+          cp kernel/out/arch/arm64/boot/Image.gz anykernel/
+          # Build final name
+          ZIP_NAME="common-5.15.${KERNEL_VERSION}-3d64R-plain-$(date +%d%m%y-%H%M%S)"
+          cd anykernel
+          zip -r0 ../"${ZIP_NAME}".zip ./*
+          echo "zip_path=$GITHUB_WORKSPACE/${ZIP_NAME}.zip" >> "$GITHUB_OUTPUT"
+          echo "zip_name=${ZIP_NAME}" >> "$GITHUB_OUTPUT"
+          cd ..
+
+      - name: Upload the flashable kernel
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{steps.package.outputs.zip_name}}
+          path: anykernel/
+      
+      - name: Create GitHub Release and upload asset
+        if: github.event_name != 'pull_request'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: experimental_build-${{ github.run_id }} 
+          target_commitish: ${{ github.sha }}
+          name: "Kernel Build by ${{ github.repository }}"
+          generate_release_notes: true
+          files: ${{ steps.package.outputs.zip_path }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}   
