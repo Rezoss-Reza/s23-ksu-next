@@ -111,20 +111,19 @@ jobs:
   
             echo "KERNEL_VERSION=$(get_make_var SUBLEVEL Makefile)" >> "$GITHUB_ENV"
       
-      - name: Checkout nomount kernel only
+      - name: Checkout Super-Builders patches
         uses: actions/checkout@v7
         with:
-          repository: maxsteeel/nomount
+          repository: Enginex0/Super-Builders
           sparse-checkout: |
-            kernel
-          path: nomount 
+             android13-5.15/KernelSU-Next/patches
+          path: super-builders
 
-      - name: Integrate NoMount
+      - name: Integrate ZeroMount
         run: |
            cd kernel
-           patch -p1 --fuzz=3 < "$GITHUB_WORKSPACE/nomount/kernel/patches/nomount_5.15_kernel_integration.patch"
-           cp -rv $GITHUB_WORKSPACE/nomount/kernel/src/* fs/
-           echo "CONFIG_NOMOUNT=y" >> ./arch/arm64/configs/gki_defconfig
+           patch -p1 --fuzz=3 < super-builders/android13-5.15/KernelSU-Next/patches/50_add_susfs_in_gki-android13-5.15.patch
+           patch -p1 --fuzz=3 < super-builders/android13-5.15/KernelSU-Next/patches/
 
         
       - name: Set up swap space
