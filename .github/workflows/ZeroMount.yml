@@ -121,6 +121,7 @@ jobs:
 
       - name: Integrate ZeroMount
         run: |
+           set -euo pipefail
            cd kernel
            curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -
            # Integrate SUSFS 2.0.0
@@ -130,8 +131,26 @@ jobs:
            #cp -rv susfs4ksu/kernel_patches/fs/* fs/
            #cp -rv susfs4ksu/kernel_patches/include/linux/* include/linux/
 
-           
-           patch -p1 --fuzz=3 < $GITHUB_WORKSPACE/super-builders/android13-5.15/KernelSU-Next/patches/50_add_susfs_in_gki-android13-5.15.patch
+           SUSFS_PATCH="$GITHUB_WORKSPACE/super-builders/android13-5.15/KernelSU-Next/patches/50_add_susfs_in_gki-android13-5.15.patch"
+
+           set +e
+           patch -p1 --fuzz=3 < "$SUSFS_PATCH"
+           SUSFS_STATUS=$?
+           set -e
+
+           if [ "$SUSFS_STATUS" -ne 0 ]; then
+             mapfile -t REJECTS < <(find . -type f -name '*.rej' -print)
+             if [ "${#REJECTS[@]}" -ne 1 ] || [ "${REJECTS[0]}" != "./fs/namespace.c.rej" ]; then
+               echo "::error::Unexpected SUSFS patch rejection(s): ${REJECTS[*]:-none}"
+               exit 1
+             fi
+
+             echo "Known Samsung 5.15.211 fs/namespace.c context mismatch detected."
+             echo "Applying complementary compatibility patch..."
+             patch -p1 --fuzz=3 < "$GITHUB_WORKSPACE/samsung_susfs_namespace_5.15.211_fix.patch"
+             rm -f fs/namespace.c.rej
+           fi
+
            patch -p1 --fuzz=3 < $GITHUB_WORKSPACE/super-builders/android13-5.15/KernelSU-Next/patches/51_enhanced_susfs-android13-5.15.patch
            patch -p1 --fuzz=3 < $GITHUB_WORKSPACE/super-builders/android13-5.15/KernelSU-Next/patches/60_zeromount-android13-5.15.patch
            patch -p1 --fuzz=3 < $GITHUB_WORKSPACE/super-builders/android13-5.15/KernelSU-Next/patches/70_ksu_safety-kernelsu-next-5.15.patch
