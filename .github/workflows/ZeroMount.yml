@@ -153,7 +153,8 @@ jobs:
 
            patch -p1 --fuzz=3 < $GITHUB_WORKSPACE/super-builders/android13-5.15/KernelSU-Next/patches/51_enhanced_susfs-android13-5.15.patch
            patch -p1 --fuzz=3 < $GITHUB_WORKSPACE/super-builders/android13-5.15/KernelSU-Next/patches/60_zeromount-android13-5.15.patch
-           patch -p1 --fuzz=3 < $GITHUB_WORKSPACE/super-builders/android13-5.15/KernelSU-Next/patches/70_ksu_safety-kernelsu-next-5.15.patch
+           # This patch targets paths such as kernel/Kbuild inside the KernelSU-Next repository.
+           patch -d KernelSU-Next -p1 --fuzz=3 < $GITHUB_WORKSPACE/super-builders/android13-5.15/KernelSU-Next/patches/70_ksu_safety-kernelsu-next-5.15.patch
 
         
       - name: Set up swap space
