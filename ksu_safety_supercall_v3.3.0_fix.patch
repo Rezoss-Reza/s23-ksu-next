@@ -1,7 +1,7 @@
 diff --git a/kernel/supercall/supercall.c b/kernel/supercall/supercall.c
 --- a/kernel/supercall/supercall.c
 +++ b/kernel/supercall/supercall.c
-@@ -361,21 +361,27 @@ void __init ksu_supercalls_init(void)
+@@ -358,16 +358,22 @@ void __init ksu_supercalls_init(void)
  
      ksu_supercall_dump_commands();
  
