@@ -124,11 +124,11 @@ jobs:
            cd kernel
            curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -
            # Integrate SUSFS 2.0.0
-           git clone -b gki-android13-5.15 https://gitlab.com/simonpunk/susfs4ksu.git
-           cp susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch KernelSU-Next/
+           #git clone -b gki-android13-5.15 https://gitlab.com/simonpunk/susfs4ksu.git
+           #cp susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch KernelSU-Next/
            #cp susfs4ksu/kernel_patches/50_add_susfs_in_gki-android13-5.15.patch ./
-           cp -rv susfs4ksu/kernel_patches/fs/* fs/
-           cp -rv susfs4ksu/kernel_patches/include/linux/* include/linux/
+           #cp -rv susfs4ksu/kernel_patches/fs/* fs/
+           #cp -rv susfs4ksu/kernel_patches/include/linux/* include/linux/
 
            
            patch -p1 --fuzz=3 < $GITHUB_WORKSPACE/super-builders/android13-5.15/KernelSU-Next/patches/50_add_susfs_in_gki-android13-5.15.patch
