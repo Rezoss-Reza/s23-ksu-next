@@ -123,7 +123,9 @@ jobs:
         run: |
            cd kernel
            patch -p1 --fuzz=3 < super-builders/android13-5.15/KernelSU-Next/patches/50_add_susfs_in_gki-android13-5.15.patch
-           patch -p1 --fuzz=3 < super-builders/android13-5.15/KernelSU-Next/patches/
+           patch -p1 --fuzz=3 < super-builders/android13-5.15/KernelSU-Next/patches/51_enhanced_susfs-android13-5.15.patch
+           patch -p1 --fuzz=3 < super-builders/android13-5.15/KernelSU-Next/patches/60_zeromount-android13-5.15.patch
+           patch -p1 --fuzz=3 < super-builders/android13-5.15/KernelSU-Next/patches/70_ksu_safety-kernelsu-next-5.15.patch
 
         
       - name: Set up swap space
