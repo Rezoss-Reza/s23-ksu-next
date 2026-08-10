@@ -242,7 +242,7 @@ diff '--color=auto' -ruN clean/fs/namei.c post-upstream/fs/namei.c
 +	bool is_nd_flags_lookup_last = (flags & ND_FLAGS_LOOKUP_LAST);
 +#endif
  
- 	/* Don't create child dentry for a dead directory. */
+ 	/* Don't go there if it's already dead */
  	if (unlikely(IS_DEADDIR(inode)))
  		return ERR_PTR(-ENOENT);
  again:
@@ -441,7 +441,7 @@ diff '--color=auto' -ruN clean/fs/namespace.c post-upstream/fs/namespace.c
  
  #include "pnode.h"
  #include "internal.h"
-+#include <trace/hooks/blk.h>
+ #include <trace/hooks/blk.h>
  
 +#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
 +extern bool susfs_is_current_ksu_domain(void);

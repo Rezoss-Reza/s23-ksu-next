@@ -58,7 +58,7 @@ diff -ruN '--exclude=include' clean-kernel/Kconfig work-kernel/Kconfig
 +	default y
 +	help
 +	  - Allow spoofing the kstat of user-defined file/directory.
-+	  - Effective only on zygote spawned umounted user app process.
++	  - Effective only on zygote spawned user app process.
 +
 +config KSU_SUSFS_SPOOF_UNAME
 +	bool "Enable to spoof uname"
@@ -827,7 +827,6 @@ diff -ruN '--exclude=include' clean-kernel/supercall/dispatch.c work-kernel/supe
          break;
      }
      default: {
-@@ -239,18 +365,24 @@
 diff -ruN '--exclude=include' clean-kernel/supercall/supercall.c work-kernel/supercall/supercall.c
 --- a/kernel/supercall/supercall.c	2026-04-09 11:57:48.451895147 +0100
 +++ b/kernel/supercall/supercall.c	2026-04-09 12:59:16.802832297 +0100
@@ -978,7 +977,7 @@ diff -ruN '--exclude=include' clean-kernel/supercall/supercall.c work-kernel/sup
  
  void __init ksu_supercalls_init(void)
  {
-@@ -358,16 +484,22 @@ void __init ksu_supercalls_init(void)
+@@ -239,16 +365,22 @@
  
      ksu_supercall_dump_commands();
  
@@ -990,6 +989,7 @@ diff -ruN '--exclude=include' clean-kernel/supercall/supercall.c work-kernel/sup
          pr_info("reboot kprobe registered successfully\n");
      }
 +#endif // #ifndef CONFIG_KSU_SUSFS
+ 
  }
  
  void __exit ksu_supercalls_exit(void)
