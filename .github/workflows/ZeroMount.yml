@@ -123,7 +123,8 @@ jobs:
         run: |
            set -euo pipefail
            cd kernel
-           curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -
+           #curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -
+           curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s dev
            # Integrate SUSFS 2.0.0
            #git clone -b gki-android13-5.15 https://gitlab.com/simonpunk/susfs4ksu.git
            #cp susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch KernelSU-Next/
