@@ -1,0 +1,193 @@
+name: Prepare local ZeroMount patches
+
+on:
+  push:
+    branches:
+      - chatgpt/zeromount-local-patches
+
+permissions:
+  contents: write
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+        with:
+          ref: chatgpt/zeromount-local-patches
+          fetch-depth: 0
+
+      - name: Regenerate pinned local patch set
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          PATCH_DIR="patches/zeromount"
+          SOURCE_BASE="https://raw.githubusercontent.com/Enginex0/Super-Builders/c2cb71614868fe742cbffee2b6f3126523432673/android13-5.15/KernelSU-Next/patches"
+          mkdir -p "$PATCH_DIR"
+
+          for PATCH_NAME in \
+            50_add_susfs_in_gki-android13-5.15.patch \
+            51_enhanced_susfs-android13-5.15.patch \
+            60_zeromount-android13-5.15.patch \
+            70_ksu_safety-kernelsu-next-5.15.patch
+          do
+            curl -fsSL "$SOURCE_BASE/$PATCH_NAME" -o "$PATCH_DIR/$PATCH_NAME"
+          done
+
+          python3 <<'PY'
+          from pathlib import Path
+
+          patch_dir = Path("patches/zeromount")
+
+          # Samsung 5.15 namespace.c already contains trace/hooks/blk.h.
+          p50 = patch_dir / "50_add_susfs_in_gki-android13-5.15.patch"
+          text = p50.read_text()
+          old = '''@@ -32,10 +32,22 @@
+           #include <linux/fs_context.h>
+           #include <linux/shmem_fs.h>
+           #include <linux/mnt_idmapping.h>
+          +#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+          +#include <linux/susfs_def.h>
+          +#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+           
+           #include "pnode.h"
+           #include "internal.h"
+           
+          +#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+          '''
+          new = '''@@ -32,11 +32,23 @@
+           #include <linux/fs_context.h>
+           #include <linux/shmem_fs.h>
+           #include <linux/mnt_idmapping.h>
+          +#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+          +#include <linux/susfs_def.h>
+          +#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+           
+           #include "pnode.h"
+           #include "internal.h"
+           #include <trace/hooks/blk.h>
+           
+          +#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+          '''
+          if text.count(old) != 1:
+              raise SystemExit("patch 50: expected namespace.c context not found exactly once")
+          p50.write_text(text.replace(old, new, 1))
+
+          # KernelSU-Next removed sh_user_path(), while the safety patch still
+          # intentionally redirects stat/faccessat /system/bin/su -> /system/bin/sh.
+          p70 = patch_dir / "70_ksu_safety-kernelsu-next-5.15.patch"
+          text = p70.read_text()
+          old = '''@@ -118,6 +125,130 @@
+           
+          \treturn 0;
+           }
+          +#else
+          +static const char sh_path[] = SH_PATH;
+          +static const char su_path[] = SU_PATH;
+          +static const char ksud_path[] = KSUD_PATH;
+          +
+          +/*
+          '''
+          new = '''@@ -118,6 +125,135 @@
+           
+          \treturn 0;
+           }
+          +#else
+          +static const char sh_path[] = SH_PATH;
+          +static const char su_path[] = SU_PATH;
+          +static const char ksud_path[] = KSUD_PATH;
+          +
+          +static char __user *sh_user_path(void)
+          +{
+          +\treturn userspace_stack_buffer(sh_path, sizeof(sh_path));
+          +}
+          +
+          +/*
+          '''
+          if text.count(old) != 1:
+              raise SystemExit("patch 70: expected sucompat.c context not found exactly once")
+          text = text.replace(old, new, 1)
+
+          # Current KernelSU-Next no longer has sulog_init_heap() at the end of
+          # ksu_supercalls_init(), so use the current tail context directly.
+          old = '''@@ -239,18 +365,24 @@
+           
+               ksu_supercall_dump_commands();
+           
+          +#ifndef CONFIG_KSU_SUSFS
+               rc = register_kprobe(&reboot_kp);
+               if (rc) {
+                   pr_err("reboot kprobe failed: %d\\n", rc);
+               } else {
+                   pr_info("reboot kprobe registered successfully\\n");
+               }
+          +#endif // #ifndef CONFIG_KSU_SUSFS
+           
+               sulog_init_heap(); // grab heap memory
+           }
+           
+           void __exit ksu_supercalls_exit(void)
+           {
+          +#ifndef CONFIG_KSU_SUSFS
+               unregister_kprobe(&reboot_kp);
+          +#else
+          +    pr_info("susfs: do nothing\\n");
+          +#endif // #ifndef CONFIG_KSU_SUSFS
+               ksu_supercall_cleanup_state();
+           }
+          '''
+          new = '''@@ -239,16 +365,22 @@
+           
+               ksu_supercall_dump_commands();
+           
+          +#ifndef CONFIG_KSU_SUSFS
+               rc = register_kprobe(&reboot_kp);
+               if (rc) {
+                   pr_err("reboot kprobe failed: %d\\n", rc);
+               } else {
+                   pr_info("reboot kprobe registered successfully\\n");
+               }
+          +#endif // #ifndef CONFIG_KSU_SUSFS
+           }
+           
+           void __exit ksu_supercalls_exit(void)
+           {
+          +#ifndef CONFIG_KSU_SUSFS
+               unregister_kprobe(&reboot_kp);
+          +#else
+          +    pr_info("susfs: do nothing\\n");
+          +#endif // #ifndef CONFIG_KSU_SUSFS
+               ksu_supercall_cleanup_state();
+           }
+          '''
+          if text.count(old) != 1:
+              raise SystemExit("patch 70: expected supercall.c tail context not found exactly once")
+          p70.write_text(text.replace(old, new, 1))
+          PY
+
+          grep -Fq ' #include <trace/hooks/blk.h>' \
+            "$PATCH_DIR/50_add_susfs_in_gki-android13-5.15.patch"
+          grep -Fq '+static char __user *sh_user_path(void)' \
+            "$PATCH_DIR/70_ksu_safety-kernelsu-next-5.15.patch"
+          ! grep -Fq 'sulog_init_heap(); // grab heap memory' \
+            "$PATCH_DIR/70_ksu_safety-kernelsu-next-5.15.patch"
+
+      - name: Commit prepared patch set
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add patches/zeromount
+          git rm .github/workflows/prepare-zeromount-patches.yml
+
+          if git diff --cached --quiet; then
+            echo "No patch changes to commit."
+            exit 0
+          fi
+
+          git commit -m "Regenerate Samsung-adapted ZeroMount patches"
+          git push origin HEAD:chatgpt/zeromount-local-patches
