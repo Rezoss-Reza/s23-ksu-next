@@ -101,8 +101,28 @@ jobs:
           done
 
           echo "  -> 70_ksu_safety-kernelsu-next-5.15.patch"
+          set +e
           patch --batch --forward -d KernelSU-Next -p1 --fuzz=3 \
             < "$PATCH_DIR/70_ksu_safety-kernelsu-next-5.15.patch"
+          SAFETY_STATUS=$?
+          set -e
+
+          if [ "$SAFETY_STATUS" -ne 0 ]; then
+            EXPECTED_REJ="KernelSU-Next/kernel/supercall/supercall.c.rej"
+            REJ_COUNT="$(find KernelSU-Next -type f -name '*.rej' | wc -l)"
+
+            if [ "$REJ_COUNT" -eq 1 ] && [ -f "$EXPECTED_REJ" ]; then
+              echo "Known current-dev supercall context mismatch detected."
+              echo "  -> 71_ksu_safety_supercall-current-dev-fix.patch"
+              patch --batch --forward -d KernelSU-Next -p1 --fuzz=3 \
+                < "$PATCH_DIR/71_ksu_safety_supercall-current-dev-fix.patch"
+              rm -f "$EXPECTED_REJ"
+            else
+              echo "::error::70 safety patch failed with unexpected reject(s):"
+              find KernelSU-Next -type f -name '*.rej' -print
+              exit "$SAFETY_STATUS"
+            fi
+          fi
 
           if find . -type f -name '*.rej' -print -quit | grep -q .; then
             echo "::error::Patch reject files remain:"
