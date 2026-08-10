@@ -1,238 +1,170 @@
-# Script github action kanged from Ivan @reddxae with little bit my modification and addition
-name: Build kernel (ZeroMount KSU-Next integration)
+name: Build kernel (ZeroMount KSU-Next)
+
 on:
-  #schedule:
-    #- cron: '0 4 * * *'  # Runs every day at 04:00 UTC
-  workflow_dispatch: # Allow manual trigger if needed
-  #push:
-    
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout the repository
-        uses: actions/checkout@v4 
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      - name: Set up the toolchain
+      - name: Install build dependencies
         run: |
-          sudo apt update
-          sudo apt purge -y firefox
-          sudo apt-mark hold firefox
-          sudo apt upgrade -y
-          sudo apt install -y \
-          bc bison flex build-essential git curl \
-          libelf-dev libssl-dev liblz4-tool lz4 \
-          pahole dwarves cpio \
-          python3 python-is-python3 \
-          tar perl zip zlib1g-dev
+          sudo apt-get update
+          sudo apt-get install -y \
+            bc bison flex build-essential git curl \
+            libelf-dev libssl-dev liblz4-tool lz4 \
+            pahole dwarves cpio python3 python-is-python3 \
+            tar perl zip zlib1g-dev
 
-      - name: Clone source with Merge if needed
+      - name: Prepare Samsung kernel source
+        shell: bash
         run: |
-          set -euxo pipefail
+          set -euo pipefail
 
-          git clone -b android13-5.15 https://github.com/samsung-sm8550/kernel_samsung_sm8550-common.git kernel
-          #git clone --depth=1 -b android13-5.15 https://github.com/reddxae/kernel_samsung_sm8550-common-ksu.git kernel
+          git clone -b android13-5.15 \
+            https://github.com/samsung-sm8550/kernel_samsung_sm8550-common.git kernel
           cd kernel
-    
+
           COMMON_REMOTE="https://android.googlesource.com/kernel/common"
           COMMON_BRANCH="android13-5.15-lts"
-    
+
           get_make_var() {
             awk -v key="$1" '$1 == key && $2 == "=" { print $3; exit }' "$2"
           }
-    
+
           LOCAL_VERSION="$(get_make_var VERSION Makefile)"
           LOCAL_PATCHLEVEL="$(get_make_var PATCHLEVEL Makefile)"
           LOCAL_SUBLEVEL="$(get_make_var SUBLEVEL Makefile)"
-          LOCAL_FULL="${LOCAL_VERSION}.${LOCAL_PATCHLEVEL}.${LOCAL_SUBLEVEL}"
-    
+
           UPSTREAM_MAKEFILE="$(mktemp)"
-    
+          trap 'rm -f "$UPSTREAM_MAKEFILE"' EXIT
           curl -fsSL "${COMMON_REMOTE}/+/refs/heads/${COMMON_BRANCH}/Makefile?format=TEXT" \
             | base64 -d > "$UPSTREAM_MAKEFILE"
-    
+
           UPSTREAM_VERSION="$(get_make_var VERSION "$UPSTREAM_MAKEFILE")"
           UPSTREAM_PATCHLEVEL="$(get_make_var PATCHLEVEL "$UPSTREAM_MAKEFILE")"
           UPSTREAM_SUBLEVEL="$(get_make_var SUBLEVEL "$UPSTREAM_MAKEFILE")"
-          UPSTREAM_FULL="${UPSTREAM_VERSION}.${UPSTREAM_PATCHLEVEL}.${UPSTREAM_SUBLEVEL}"
-    
-          echo "Local kernel version:    $LOCAL_FULL"
-          echo "Android common version: $UPSTREAM_FULL"
-    
-          if [ "$LOCAL_VERSION" != "$UPSTREAM_VERSION" ] || [ "$LOCAL_PATCHLEVEL" != "$UPSTREAM_PATCHLEVEL" ]; then
-            echo "Different kernel base: local=$LOCAL_VERSION.$LOCAL_PATCHLEVEL upstream=$UPSTREAM_VERSION.$UPSTREAM_PATCHLEVEL"
-            echo "Refusing automatic merge."
+
+          echo "Samsung kernel: ${LOCAL_VERSION}.${LOCAL_PATCHLEVEL}.${LOCAL_SUBLEVEL}"
+          echo "Android common: ${UPSTREAM_VERSION}.${UPSTREAM_PATCHLEVEL}.${UPSTREAM_SUBLEVEL}"
+
+          if [[ "$LOCAL_VERSION.$LOCAL_PATCHLEVEL" != "$UPSTREAM_VERSION.$UPSTREAM_PATCHLEVEL" ]]; then
+            echo "::error::Kernel base mismatch; refusing automatic LTS merge."
             exit 1
           fi
-    
-          if [ "$LOCAL_SUBLEVEL" -lt "$UPSTREAM_SUBLEVEL" ]; then
-            echo "Local kernel is older. Merging ${COMMON_BRANCH}..."    
+
+          if (( LOCAL_SUBLEVEL < UPSTREAM_SUBLEVEL )); then
+            echo "Merging ${COMMON_BRANCH}..."
             git config user.name "github-actions[bot]"
             git config user.email "github-actions[bot]@users.noreply.github.com"
-            # Needed because clone uses --depth=1.
-            git fetch --depth=100 origin android13-5.15 || git fetch --unshallow origin android13-5.15 || true    
-            git remote add android-common "$COMMON_REMOTE" || git remote set-url android-common "$COMMON_REMOTE"
-            
+            git remote add android-common "$COMMON_REMOTE"
             git fetch --depth=100 --no-tags android-common "$COMMON_BRANCH"
-            echo "Checking possible merge conflicts before using -X theirs..."
-            
-            set +e
-            git merge --no-commit --no-ff FETCH_HEAD
-            TEST_MERGE_STATUS=$?
-            set -e
-            
-            if [ "$TEST_MERGE_STATUS" -ne 0 ]; then
-              echo "Normal merge would conflict in these files:"
-              git diff --name-only --diff-filter=U | while read -r file; do
-                echo "::warning::Merge conflict: $file"
-              done
-            
-              echo "Aborting test merge..."
-              git merge --abort || git reset --hard HEAD
-            else
-              echo "Normal merge has no conflicts."
-              echo "Aborting test merge before real merge..."
-              git merge --abort || git reset --hard HEAD
-            fi
-            
-            echo "Running real merge with -X ours..."
-            
-            git merge -X ours --no-edit --no-ff FETCH_HEAD || {
-              echo "::error::Merge with -X ours still failed."
-              git status --short
-              exit 1
-            }
+            git merge -X ours --no-edit --no-ff FETCH_HEAD
 
-            echo "Applying LTS compilation fix patch..."
-            patch -p1 --fuzz=3 < "${GITHUB_WORKSPACE}/samsung_lts_compile_fix.patch"
-           else
-             echo "Local kernel is already same or newer. No merge needed."
-           fi
-  
-            echo "KERNEL_VERSION=$(get_make_var SUBLEVEL Makefile)" >> "$GITHUB_ENV"
-      
-      - name: Checkout Super-Builders patches
-        uses: actions/checkout@v7
-        with:
-          repository: Enginex0/Super-Builders
-          sparse-checkout: |
-             android13-5.15/KernelSU-Next/patches
-          path: super-builders
+            echo "Applying Samsung LTS compile fixes..."
+            patch --batch --forward -p1 --fuzz=3 \
+              < "$GITHUB_WORKSPACE/samsung_lts_compile_fix.patch"
+          else
+            echo "Samsung source is already at the same or newer LTS sublevel."
+          fi
 
-      - name: Integrate ZeroMount
+          echo "KERNEL_VERSION=$(get_make_var SUBLEVEL Makefile)" >> "$GITHUB_ENV"
+
+      - name: Integrate KernelSU-Next, SUSFS and ZeroMount
+        shell: bash
         run: |
-           set -euo pipefail
-           cd kernel
-           #curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -
-           curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s dev
-           # Integrate SUSFS 2.0.0
-           #git clone -b gki-android13-5.15 https://gitlab.com/simonpunk/susfs4ksu.git
-           #cp susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch KernelSU-Next/
-           #cp susfs4ksu/kernel_patches/50_add_susfs_in_gki-android13-5.15.patch ./
-           #cp -rv susfs4ksu/kernel_patches/fs/* fs/
-           #cp -rv susfs4ksu/kernel_patches/include/linux/* include/linux/
+          set -euo pipefail
+          cd kernel
 
-           SUSFS_PATCH="$GITHUB_WORKSPACE/super-builders/android13-5.15/KernelSU-Next/patches/50_add_susfs_in_gki-android13-5.15.patch"
+          PATCH_DIR="$GITHUB_WORKSPACE/patches/zeromount"
 
-           set +e
-           patch -p1 --fuzz=3 < "$SUSFS_PATCH"
-           SUSFS_STATUS=$?
-           set -e
+          echo "Integrating KernelSU-Next dev..."
+          curl -LSs \
+            "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" \
+            | bash -s dev
 
-           if [ "$SUSFS_STATUS" -ne 0 ]; then
-             mapfile -t REJECTS < <(find . -type f -name '*.rej' -print)
-             if [ "${#REJECTS[@]}" -ne 1 ] || [ "${REJECTS[0]}" != "./fs/namespace.c.rej" ]; then
-               echo "::error::Unexpected SUSFS patch rejection(s): ${REJECTS[*]:-none}"
-               exit 1
-             fi
+          echo "Applying Samsung-adapted local patches..."
+          for PATCH_NAME in \
+            50_add_susfs_in_gki-android13-5.15.patch \
+            51_enhanced_susfs-android13-5.15.patch \
+            60_zeromount-android13-5.15.patch
+          do
+            echo "  -> $PATCH_NAME"
+            patch --batch --forward -p1 --fuzz=3 < "$PATCH_DIR/$PATCH_NAME"
+          done
 
-             echo "Known Samsung 5.15.211 fs/namespace.c context mismatch detected."
-             echo "Applying complementary compatibility patch..."
-             patch -p1 --fuzz=3 < "$GITHUB_WORKSPACE/samsung_susfs_namespace_5.15.211_fix.patch"
-             rm -f fs/namespace.c.rej
-           fi
+          echo "  -> 70_ksu_safety-kernelsu-next-5.15.patch"
+          patch --batch --forward -d KernelSU-Next -p1 --fuzz=3 \
+            < "$PATCH_DIR/70_ksu_safety-kernelsu-next-5.15.patch"
 
-           patch -p1 --fuzz=3 < $GITHUB_WORKSPACE/super-builders/android13-5.15/KernelSU-Next/patches/51_enhanced_susfs-android13-5.15.patch
-           patch -p1 --fuzz=3 < $GITHUB_WORKSPACE/super-builders/android13-5.15/KernelSU-Next/patches/60_zeromount-android13-5.15.patch
+          if find . -type f -name '*.rej' -print -quit | grep -q .; then
+            echo "::error::Patch reject files remain:"
+            find . -type f -name '*.rej' -print
+            exit 1
+          fi
 
-           # The safety patch targets files inside the KernelSU-Next repository.
-           SAFETY_PATCH="$GITHUB_WORKSPACE/super-builders/android13-5.15/KernelSU-Next/patches/70_ksu_safety-kernelsu-next-5.15.patch"
-           set +e
-           patch -d KernelSU-Next -p1 --fuzz=3 < "$SAFETY_PATCH"
-           SAFETY_STATUS=$?
-           set -e
+          grep -q 'static char __user \*sh_user_path' \
+            KernelSU-Next/kernel/feature/sucompat.c
+          echo "Local patch set applied cleanly."
 
-           if [ "$SAFETY_STATUS" -ne 0 ]; then
-             mapfile -t SAFETY_REJECTS < <(find KernelSU-Next -type f -name '*.rej' -print)
-             if [ "${#SAFETY_REJECTS[@]}" -ne 1 ] || [ "${SAFETY_REJECTS[0]}" != "KernelSU-Next/kernel/supercall/supercall.c.rej" ]; then
-               echo "::error::Unexpected KSU safety patch rejection(s): ${SAFETY_REJECTS[*]:-none}"
-               exit 1
-             fi
-
-             echo "Known KernelSU-Next v3.3.0 supercall.c context mismatch detected."
-             echo "Applying complementary supercall compatibility patch..."
-             patch -d KernelSU-Next -p1 --fuzz=3 < "$GITHUB_WORKSPACE/ksu_safety_supercall_v3.3.0_fix.patch"
-             rm -f KernelSU-Next/kernel/supercall/supercall.c.rej
-           fi
-
-           if find . -type f -name '*.rej' -print -quit | grep -q .; then
-             echo "::error::Patch reject files remain after compatibility fixes:"
-             find . -type f -name '*.rej' -print
-             exit 1
-           fi
-
-        
-      - name: Set up swap space
+      - name: Set up swap
         uses: pierotofy/set-swap-space@master
         with:
           swap-size-gb: 16
 
-      - name: Build the kernel
+      - name: Build kernel
+        shell: bash
         run: |
-          set -euxo pipefail
+          set -euo pipefail
           cd kernel
           chmod +x scripts/build.sh
           ./scripts/build.sh 2>&1 | tee "$GITHUB_WORKSPACE/build.log"
 
-          echo "=== Checking final NoMount configuration ==="
-
-          grep 'CONFIG_NOMOUNT' out/.config || true
-
-          if ! grep -qx 'CONFIG_NOMOUNT=y' out/.config; then
-             echo "::error::CONFIG_NOMOUNT is missing from final out/.config"
-             exit 1
+          echo "=== Checking final ZeroMount configuration ==="
+          grep 'CONFIG_ZEROMOUNT' out/.config || true
+          if ! grep -qx 'CONFIG_ZEROMOUNT=y' out/.config; then
+            echo "::error::CONFIG_ZEROMOUNT=y is missing from final out/.config"
+            exit 1
           fi
+          echo "CONFIG_ZEROMOUNT=y confirmed."
 
-          echo "CONFIG_NOMOUNT=y confirmed in final kernel configuration"
-
-      - name: Package image with AnyKernel3
+      - name: Package AnyKernel3
         id: package
+        shell: bash
         run: |
-          set -euxo pipefail
-          unzip "${GITHUB_WORKSPACE}/anykernel.zip" -d anykernel/
+          set -euo pipefail
+          unzip "$GITHUB_WORKSPACE/anykernel.zip" -d anykernel/
           cp kernel/out/arch/arm64/boot/Image.gz anykernel/
-          # Build final name
-          ZIP_NAME="common-5.15.${KERNEL_VERSION}-3d64R-NoMount-$(date +%d%m%y-%H%M%S)"
-          cd anykernel
-          zip -r0 ../"${ZIP_NAME}".zip ./*
-          echo "zip_path=$GITHUB_WORKSPACE/${ZIP_NAME}.zip" >> "$GITHUB_OUTPUT"
-          echo "zip_name=${ZIP_NAME}" >> "$GITHUB_OUTPUT"
-          cd ..
 
-      - name: Upload the flashable kernel
+          ZIP_NAME="common-5.15.${KERNEL_VERSION}-3d64R-ZeroMount-$(date +%d%m%y-%H%M%S)"
+          (
+            cd anykernel
+            zip -r0 "$GITHUB_WORKSPACE/${ZIP_NAME}.zip" ./*
+          )
+
+          echo "zip_path=$GITHUB_WORKSPACE/${ZIP_NAME}.zip" >> "$GITHUB_OUTPUT"
+          echo "zip_name=$ZIP_NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Upload flashable kernel
         uses: actions/upload-artifact@v4
         with:
-          name: ${{steps.package.outputs.zip_name}}
-          path: anykernel/
-      
-      - name: Create GitHub Release and upload asset
-        if: github.event_name != 'pull_request'
+          name: ${{ steps.package.outputs.zip_name }}
+          path: ${{ steps.package.outputs.zip_path }}
+
+      - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: experimental_build-${{ github.run_id }} 
+          tag_name: experimental_build-${{ github.run_id }}
           target_commitish: ${{ github.sha }}
-          name: "Kernel Build by ${{ github.repository }}"
+          name: Kernel Build by ${{ github.repository }}
           generate_release_notes: true
           files: ${{ steps.package.outputs.zip_path }}
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}   
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
