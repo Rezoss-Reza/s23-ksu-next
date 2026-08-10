@@ -1,0 +1,91 @@
+name: Finalize ZeroMount validation
+
+on:
+  push:
+    branches:
+      - chatgpt/zeromount-local-patches
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  validate-and-clean:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+        with:
+          ref: chatgpt/zeromount-local-patches
+          fetch-depth: 0
+
+      - name: Validate local patch application
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone -b android13-5.15 https://github.com/samsung-sm8550/kernel_samsung_sm8550-common.git kernel
+          cd kernel
+
+          get_make_var() {
+            awk -v key="$1" '$1 == key && $2 == "=" { print $3; exit }' "$2"
+          }
+
+          COMMON_REMOTE="https://android.googlesource.com/kernel/common"
+          COMMON_BRANCH="android13-5.15-lts"
+          LOCAL_SUBLEVEL="$(get_make_var SUBLEVEL Makefile)"
+          UPSTREAM_MAKEFILE="$(mktemp)"
+          curl -fsSL "${COMMON_REMOTE}/+/refs/heads/${COMMON_BRANCH}/Makefile?format=TEXT" \
+            | base64 -d > "$UPSTREAM_MAKEFILE"
+          UPSTREAM_SUBLEVEL="$(get_make_var SUBLEVEL "$UPSTREAM_MAKEFILE")"
+          rm -f "$UPSTREAM_MAKEFILE"
+
+          if (( LOCAL_SUBLEVEL < UPSTREAM_SUBLEVEL )); then
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git remote add android-common "$COMMON_REMOTE"
+            git fetch --depth=100 --no-tags android-common "$COMMON_BRANCH"
+            git merge -X ours --no-edit --no-ff FETCH_HEAD
+            patch --batch --forward -p1 --fuzz=3 < "$GITHUB_WORKSPACE/samsung_lts_compile_fix.patch"
+          fi
+
+          curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s dev
+
+          PATCH_DIR="$GITHUB_WORKSPACE/patches/zeromount"
+          for PATCH_NAME in \
+            50_add_susfs_in_gki-android13-5.15.patch \
+            51_enhanced_susfs-android13-5.15.patch \
+            60_zeromount-android13-5.15.patch
+          do
+            patch --batch --forward -p1 --fuzz=3 < "$PATCH_DIR/$PATCH_NAME"
+          done
+          patch --batch --forward -d KernelSU-Next -p1 --fuzz=3 \
+            < "$PATCH_DIR/70_ksu_safety-kernelsu-next-5.15.patch"
+
+          if find . -type f -name '*.rej' -print -quit | grep -q .; then
+            echo "::error::Patch reject files remain"
+            find . -type f -name '*.rej' -print
+            exit 1
+          fi
+          grep -q 'static char __user \*sh_user_path' KernelSU-Next/kernel/feature/sucompat.c
+          ! grep -q 'sulog_init_heap(); // grab heap memory' KernelSU-Next/kernel/supercall/supercall.c
+
+      - name: Remove temporary validation files
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          rm -f .zeromount-patch-validation-ok
+          git rm -f --ignore-unmatch \
+            .github/workflows/validate-zeromount-local.yml \
+            .github/workflows/validate-zeromount-marker.yml \
+            .github/workflows/cleanup-zeromount-validation.yml
+          git add -A
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git commit -m "Remove temporary ZeroMount validation workflows"
+          git push origin HEAD:chatgpt/zeromount-local-patches
