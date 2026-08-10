@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - chatgpt/zeromount-local-patches
+  pull_request:
+    branches:
+      - main
 
 jobs:
   validate:
