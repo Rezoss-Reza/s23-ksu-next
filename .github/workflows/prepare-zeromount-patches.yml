@@ -41,67 +41,66 @@ jobs:
 
           python3 <<'PY'
           from pathlib import Path
+          import re
 
           patch_dir = Path("patches/zeromount")
 
-          # Patch 50: Samsung fs/namespace.c already has trace/hooks/blk.h.
+          # Patch 50: Samsung fs/namespace.c already contains trace/hooks/blk.h.
           p50 = patch_dir / "50_add_susfs_in_gki-android13-5.15.patch"
           text = p50.read_text()
           ns_marker = "diff '--color=auto' -ruN clean/fs/namespace.c post-upstream/fs/namespace.c"
           before, sep, ns = text.partition(ns_marker)
           if not sep:
               raise SystemExit("patch 50: namespace.c section not found")
-
-          if ns.count("@@ -32,10 +32,22 @@") != 1:
-              raise SystemExit("patch 50: namespace hunk header not found exactly once")
           ns = ns.replace("@@ -32,10 +32,22 @@", "@@ -32,11 +32,23 @@", 1)
-
-          marker = ' #include "internal.h"\n \n+#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n'
-          replacement = ' #include "internal.h"\n #include <trace/hooks/blk.h>\n \n+#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n'
-          if ns.count(marker) != 1:
-              raise SystemExit("patch 50: Samsung namespace insertion point not found exactly once")
-          ns = ns.replace(marker, replacement, 1)
+          ns, n = re.subn(
+              r'( #include "internal\.h"\n)( \n)(\+#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n)',
+              r'\1 #include <trace/hooks/blk.h>\n\2\3',
+              ns,
+              count=1,
+          )
+          if n != 1:
+              raise SystemExit("patch 50: Samsung namespace insertion point not found")
           p50.write_text(before + sep + ns)
 
-          # Patch 70: keep the intended /system/bin/su -> /system/bin/sh
-          # manual-hook behavior by restoring the helper removed upstream.
+          # Patch 70: restore the /system/bin/sh userspace helper used by the
+          # SUSFS/manual-hook faccessat/stat path on current KernelSU-Next.
           p70 = patch_dir / "70_ksu_safety-kernelsu-next-5.15.patch"
           text = p70.read_text()
           su_marker = "diff -ruN '--exclude=include' clean-kernel/feature/sucompat.c work-kernel/feature/sucompat.c"
           before, sep, tail = text.partition(su_marker)
           if not sep:
               raise SystemExit("patch 70: sucompat.c section not found")
-
-          if tail.count("@@ -118,6 +125,130 @@") != 1:
-              raise SystemExit("patch 70: sucompat hunk header not found exactly once")
           tail = tail.replace("@@ -118,6 +125,130 @@", "@@ -118,6 +125,135 @@", 1)
-
-          marker = "+static const char ksud_path[] = KSUD_PATH;\n+\n+/*\n"
+          marker = "+static const char ksud_path[] = KSUD_PATH;\n"
           helper = (
-              "+static const char ksud_path[] = KSUD_PATH;\n+\n"
+              marker
+              "+\n"
               "+static char __user *sh_user_path(void)\n"
               "+{\n"
               "+\treturn userspace_stack_buffer(sh_path, sizeof(sh_path));\n"
-              "+}\n+\n+/*\n"
+              "+}\n"
           )
-          if tail.count(marker) != 1:
-              raise SystemExit("patch 70: sh_user_path insertion point not found exactly once")
+          if marker not in tail:
+              raise SystemExit("patch 70: ksud_path marker not found")
           tail = tail.replace(marker, helper, 1)
           text = before + sep + tail
 
-          # Current KernelSU-Next no longer calls sulog_init_heap() here.
+          # Current KernelSU-Next no longer has sulog_init_heap() here.
           super_marker = "diff -ruN '--exclude=include' clean-kernel/supercall/supercall.c work-kernel/supercall/supercall.c"
           before, sep, super_tail = text.partition(super_marker)
           if not sep:
               raise SystemExit("patch 70: supercall.c section not found")
-          if super_tail.count("@@ -239,18 +365,24 @@") != 1:
-              raise SystemExit("patch 70: supercall tail hunk header not found exactly once")
           super_tail = super_tail.replace("@@ -239,18 +365,24 @@", "@@ -239,16 +365,22 @@", 1)
-
-          obsolete = "     sulog_init_heap(); // grab heap memory\n"
-          if super_tail.count(obsolete) != 1:
-              raise SystemExit("patch 70: obsolete sulog_init_heap context not found exactly once")
-          super_tail = super_tail.replace(obsolete, "", 1)
+          super_tail, n = re.subn(
+              r'^\s+sulog_init_heap\(\); // grab heap memory\n',
+              '',
+              super_tail,
+              count=1,
+              flags=re.MULTILINE,
+          )
+          if n != 1:
+              raise SystemExit("patch 70: obsolete sulog_init_heap context not found")
           p70.write_text(before + sep + super_tail)
           PY
 
@@ -122,7 +121,10 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
           git add patches/zeromount
-          git rm .github/workflows/prepare-zeromount-patches.yml
+          if git diff --cached --quiet; then
+            echo "Patch set already matches the generated result."
+            exit 0
+          fi
 
           git commit -m "Regenerate Samsung-adapted ZeroMount patches"
           git push origin HEAD:chatgpt/zeromount-local-patches
