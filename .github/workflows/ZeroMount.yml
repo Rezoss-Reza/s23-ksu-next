@@ -104,6 +104,10 @@ jobs:
           patch --batch --forward -d KernelSU-Next -p1 --fuzz=3 \
             < "$PATCH_DIR/70_ksu_safety-kernelsu-next-5.15.patch"
 
+          echo "  -> 72_ksu_sucompat-current-dev-fix.patch"
+          patch --batch --forward -d KernelSU-Next -p1 --fuzz=3 \
+            < "$PATCH_DIR/72_ksu_sucompat-current-dev-fix.patch"
+
           if find . -type f -name '*.rej' -print -quit | grep -q .; then
             echo "::error::Patch reject files remain:"
             find . -type f -name '*.rej' -print
