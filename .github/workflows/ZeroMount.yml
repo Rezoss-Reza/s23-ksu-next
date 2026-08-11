@@ -114,9 +114,12 @@ jobs:
             exit 1
           fi
 
-          grep -q 'static char __user \*sh_user_path' \
-            KernelSU-Next/kernel/feature/sucompat.c
-          echo "Local patch set applied cleanly."
+          SUCOMPAT="KernelSU-Next/kernel/feature/sucompat.c"
+          grep -q 'static char __user \*sh_user_path' "$SUCOMPAT"
+          grep -q '^static bool is_ksud_exists' "$SUCOMPAT"
+          grep -q '^long ksu_handle_faccessat_sucompat' "$SUCOMPAT"
+          grep -q '^long ksu_handle_stat_sucompat' "$SUCOMPAT"
+          echo "Local patch set applied cleanly; current KSU sucompat handlers are present."
 
       - name: Set up swap
         uses: pierotofy/set-swap-space@master
