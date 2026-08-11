@@ -1,7 +1,7 @@
 diff --git a/kernel/feature/sucompat.c b/kernel/feature/sucompat.c
 --- a/kernel/feature/sucompat.c
 +++ b/kernel/feature/sucompat.c
-@@ -133,6 +133,25 @@ static char __user *sh_user_path(void)
+@@ -133,6 +133,27 @@ static char __user *sh_user_path(void)
  {
  	return userspace_stack_buffer(sh_path, sizeof(sh_path));
  }
