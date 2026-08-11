@@ -977,9 +977,7 @@ diff -ruN '--exclude=include' clean-kernel/supercall/supercall.c work-kernel/sup
  
  void __init ksu_supercalls_init(void)
  {
-@@ -233,22 +359,30 @@
- void __init ksu_supercalls_init(void)
- {
+@@ -235,17 +361,25 @@
 +#ifndef CONFIG_KSU_SUSFS
      int rc;
 +#endif // #ifndef CONFIG_KSU_SUSFS
