@@ -116,10 +116,10 @@ jobs:
 
           SUCOMPAT="KernelSU-Next/kernel/feature/sucompat.c"
           grep -q 'static char __user \*sh_user_path' "$SUCOMPAT"
-          grep -q '^static bool is_ksud_exists' "$SUCOMPAT"
-          grep -q '^long ksu_handle_faccessat_sucompat' "$SUCOMPAT"
-          grep -q '^long ksu_handle_stat_sucompat' "$SUCOMPAT"
-          echo "Local patch set applied cleanly; current KSU sucompat handlers are present."
+          [[ "$(grep -c '^static bool is_ksud_exists' "$SUCOMPAT")" -eq 1 ]]
+          [[ "$(grep -c '^long ksu_handle_faccessat_sucompat' "$SUCOMPAT")" -eq 1 ]]
+          [[ "$(grep -c '^long ksu_handle_stat_sucompat' "$SUCOMPAT")" -eq 1 ]]
+          echo "Local patch set applied cleanly; current KSU sucompat handlers are present exactly once."
 
       - name: Set up swap
         uses: pierotofy/set-swap-space@master
