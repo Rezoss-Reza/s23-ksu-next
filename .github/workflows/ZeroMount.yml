@@ -115,11 +115,22 @@ jobs:
           fi
 
           SUCOMPAT="KernelSU-Next/kernel/feature/sucompat.c"
-          grep -q 'static char __user \*sh_user_path' "$SUCOMPAT"
-          [[ "$(grep -c '^static bool is_ksud_exists' "$SUCOMPAT")" -eq 1 ]]
-          [[ "$(grep -c '^long ksu_handle_faccessat_sucompat' "$SUCOMPAT")" -eq 1 ]]
-          [[ "$(grep -c '^long ksu_handle_stat_sucompat' "$SUCOMPAT")" -eq 1 ]]
-          echo "Local patch set applied cleanly; current KSU sucompat handlers are present exactly once."
+          SH_COUNT="$(grep -c 'static char __user \*sh_user_path' "$SUCOMPAT")"
+          KSUD_EXISTS_COUNT="$(grep -c '^static bool is_ksud_exists' "$SUCOMPAT")"
+          FACCESSAT_COUNT="$(grep -c '^long ksu_handle_faccessat_sucompat' "$SUCOMPAT")"
+          STAT_COUNT="$(grep -c '^long ksu_handle_stat_sucompat' "$SUCOMPAT")"
+
+          echo "sucompat source counts: sh_user_path=$SH_COUNT is_ksud_exists=$KSUD_EXISTS_COUNT faccessat=$FACCESSAT_COUNT stat=$STAT_COUNT"
+
+          # Patch 70 leaves the current upstream is_ksud_exists/faccessat text in
+          # the CONFIG_KSU_SUSFS-disabled branch, while patch 72 restores one
+          # active copy in the SUSFS branch. Therefore two textual definitions
+          # are expected for those two symbols, but only one is compiled.
+          [[ "$SH_COUNT" -eq 1 ]]
+          [[ "$KSUD_EXISTS_COUNT" -eq 2 ]]
+          [[ "$FACCESSAT_COUNT" -eq 2 ]]
+          [[ "$STAT_COUNT" -eq 1 ]]
+          echo "Local patch set applied cleanly; sucompat source layout matches the expected SUSFS branches."
 
       - name: Set up swap
         uses: pierotofy/set-swap-space@master
