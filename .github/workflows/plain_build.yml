@@ -102,7 +102,11 @@ jobs:
             }
 
             echo "Applying LTS compilation fix patch..."
-            patch -p1 --fuzz=3 < "${GITHUB_WORKSPACE}/samsung_lts_compile_fix.patch"
+            patch --batch --dry-run -p1 --fuzz=0 < "${GITHUB_WORKSPACE}/samsung_lts_compile_fix.patch" || {
+              echo "::error::samsung_lts_compile_fix.patch no longer applies cleanly after the LTS merge."
+              exit 1
+            }
+            patch --batch -p1 --fuzz=0 < "${GITHUB_WORKSPACE}/samsung_lts_compile_fix.patch"
            else
              echo "Local kernel is already same or newer. No merge needed."
            fi
