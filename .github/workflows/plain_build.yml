@@ -21,7 +21,7 @@ jobs:
           sudo apt upgrade -y
           sudo apt install -y \
           bc bison flex build-essential git curl \
-          libelf-dev libssl-dev liblz4-tool lz4 \
+          libelf-dev libssl-dev liblz4-tools lz4 \
           pahole dwarves cpio \
           python3 python-is-python3 \
           tar perl zip zlib1g-dev
