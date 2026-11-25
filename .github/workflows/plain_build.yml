@@ -124,12 +124,18 @@ jobs:
           cd kernel
           chmod +x scripts/build.sh
           ./scripts/build.sh 2>&1 | tee "$GITHUB_WORKSPACE/build.log"
+      - name: Build experimental Wi-Fi and Mosey kernel modules
+        run: |
+          set -euxo pipefail
+          sudo apt install -y kmod
+          bash "$GITHUB_WORKSPACE/wifi-mosey/build-drivers.sh" "$GITHUB_WORKSPACE/kernel" "$GITHUB_WORKSPACE/wifi-driver"
       - name: Package image with AnyKernel3
         id: package
         run: |
           set -euxo pipefail
           unzip "${GITHUB_WORKSPACE}/anykernel.zip" -d anykernel/
           cp kernel/out/arch/arm64/boot/Image.gz anykernel/
+          cp -a wifi-driver anykernel/driver
           # Build final name
           ZIP_NAME="common-5.15.${KERNEL_VERSION}-3d64R-plain-$(date +%d%m%y-%H%M%S)"
           cd anykernel
