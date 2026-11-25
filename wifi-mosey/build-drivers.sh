@@ -9,10 +9,11 @@ KOUT="$KERNEL/out"
 CLANG_DIR="${CLANG_DIR:-$HOME/tools/google-clang}"
 export PATH="$CLANG_DIR/bin:$PATH" CCACHE_DISABLE=1
 [[ -x "$CLANG_DIR/bin/clang" && -s "$KOUT/Module.symvers" && -s "$KOUT/.config" && -s "$KOUT/arch/arm64/boot/Image" ]]
-EXPECTED=ea18def5387ca567274f3a9c23105ed4f2dcfd3de6f4e822490eb6560ee9ac87
-[[ "$(sha256sum "$KERNEL/include/net/cfg80211.h" | cut -d ' ' -f1)" == "$EXPECTED" ]] || { echo 'Unreviewed cfg80211.h; refuse to use saved Samsung compatibility overlay' >&2; exit 1; }
 TASK_WORK=$(mktemp -d /tmp/wifi-mosey-ci.XXXXXX)
 tar -xzf "$PACKAGE/driver-source.tar.gz" -C "$TASK_WORK"
+python3 "$PACKAGE/prepare-cfg80211.py" "$KERNEL/include/net/cfg80211.h" "$PACKAGE/cfg80211-patches" "$TASK_WORK/generated-compat"
+# Ensure the reviewed normalization and patches reproduce the saved stock overlay.
+cmp "$TASK_WORK/generated-compat/include/net/cfg80211.h" "$TASK_WORK/vendor-compat/include/net/cfg80211.h"
 python3 - "$KOUT/Module.symvers" "$PACKAGE/stock-vendor-exports.symvers" "$TASK_WORK/stock-vendor-exports.symvers" <<'PY_SYMVERS'
 import sys
 from pathlib import Path
@@ -47,6 +48,10 @@ llvm-strip --strip-debug "$DEST"/*.ko
 RELEASE=$(cat "$KOUT/include/config/kernel.release")
 for module in "$DEST"/*.ko; do
   [[ "$(modinfo -F vermagic "$module" | cut -d ' ' -f1)" == "$RELEASE" ]] || { echo "Unexpected module vermagic: $module" >&2; exit 1; }
+  if llvm-nm --undefined-only "$module" | awk '{print $NF}' | grep -Fx cfg80211_notify_new_peer_candidate >/dev/null; then
+    echo "Unreviewed stock cfg80211 peer-candidate import: $module" >&2
+    exit 1
+  fi
 done
 python3 - "$KOUT/arch/arm64/boot/Image" "$DEST" "$RELEASE" <<'PY'
 import hashlib,json,subprocess,sys
