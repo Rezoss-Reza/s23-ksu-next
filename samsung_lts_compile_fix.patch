@@ -66,3 +66,17 @@ diff --git a/drivers/md/dm-verity-debug.c b/drivers/md/dm-verity-debug.c
          DMERR("%s: reached maximum errors", v->data_dev->name);
 
      snprintf(verity_env, DM_VERITY_ENV_LENGTH, "%s=%d,%llu",
+diff --git a/fs/proc/internal.h b/fs/proc/internal.h
+--- a/fs/proc/internal.h
++++ b/fs/proc/internal.h
+@@ -336,2 +336,10 @@
++/* Prevent ephemeral procfs dentries from becoming mountpoints. */
++static inline struct dentry *proc_splice_unmountable(struct inode *inode,
++		struct dentry *dentry, const struct dentry_operations *d_ops)
++{
++	dont_mount(dentry);
++	return d_splice_alias_ops(inode, dentry, d_ops);
++}
++
+ #ifdef CONFIG_PAGE_BOOST
+ #include <linux/pagevec.h>
