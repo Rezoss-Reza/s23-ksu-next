@@ -9,6 +9,7 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 360
     steps:
       - name: Checkout the repository
         uses: actions/checkout@v4 
@@ -123,6 +124,20 @@ jobs:
           set -euxo pipefail
           cd kernel
           chmod +x scripts/build.sh
+          # Full LTO can spend a long time linking without emitting output.
+          # Record resource use so a runner shutdown can be diagnosed.
+          (
+            while sleep 60; do
+              echo "::group::Kernel build resources $(date -u +%FT%TZ)"
+              free -h || true
+              swapon --show || true
+              df -h "$GITHUB_WORKSPACE" || true
+              ps -eo pid,ppid,etime,pcpu,pmem,rss,stat,comm --sort=-rss | head -16 || true
+              echo "::endgroup::"
+            done
+          ) &
+          DIAGNOSTIC_PID=$!
+          trap 'kill "$DIAGNOSTIC_PID" 2>/dev/null || true' EXIT
           ./scripts/build.sh 2>&1 | tee "$GITHUB_WORKSPACE/build.log"
       - name: Build experimental Wi-Fi and Mosey kernel modules
         run: |
