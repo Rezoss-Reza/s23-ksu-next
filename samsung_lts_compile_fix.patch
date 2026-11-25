@@ -80,3 +80,28 @@ diff --git a/fs/proc/internal.h b/fs/proc/internal.h
 +
  #ifdef CONFIG_PAGE_BOOST
  #include <linux/pagevec.h>
+diff --git a/fs/f2fs/f2fs.h b/fs/f2fs/f2fs.h
+--- a/fs/f2fs/f2fs.h
++++ b/fs/f2fs/f2fs.h
+@@ -1739,1 +1739,21 @@
++struct f2fs_gc_kthread {
++	struct task_struct *f2fs_gc_task;
++	wait_queue_head_t gc_wait_queue_head;
++
++	/* for gc sleep time */
++	unsigned int urgent_sleep_time;
++	unsigned int min_sleep_time;
++	unsigned int max_sleep_time;
++	unsigned int no_gc_sleep_time;
++
++	/* for changing gc mode */
++	unsigned int gc_wake;
++
++	/* for GC_MERGE mount option */
++	wait_queue_head_t fggc_wq;		/*
++						 * caller of f2fs_balance_fs()
++						 * will wait on this wait queue.
++						 */
++};
++
+ enum sec_stat_cp_type {
