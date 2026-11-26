@@ -1,0 +1,78 @@
+--- a/qcacld-3.0/core/wma/src/wma_eht.c
++++ b/qcacld-3.0/core/wma/src/wma_eht.c
+@@ -577,6 +577,8 @@
+ void wma_eht_update_tgt_services(struct wmi_unified *wmi_handle,
+ 				 struct wma_tgt_services *cfg)
+ {
++	pr_info("S23WIFI7_DIAG fw_service_11be=%u\n",
++		wmi_service_enabled(wmi_handle, wmi_service_11be));
+ 	if (wmi_service_enabled(wmi_handle, wmi_service_11be)) {
+ 		cfg->en_11be = true;
+ 		wma_set_fw_wlan_feat_caps(DOT11BE);
+--- a/qcacld-3.0/core/hdd/src/wlan_hdd_main.c
++++ b/qcacld-3.0/core/hdd/src/wlan_hdd_main.c
+@@ -2144,6 +2144,17 @@
+ 	     config->dot11Mode == eHDD_DOT11_MODE_11ac_ONLY) && !cfg->en_11ac)
+ 		config->dot11Mode = eHDD_DOT11_MODE_AUTO;
+ 
++	/* Observe gates without overriding their decisions. */
++	{
++		uint16_t phybitmap = 0;
++		QDF_STATUS diag_status;
++
++		diag_status = wlan_reg_get_phybitmap(hdd_ctx->pdev, &phybitmap);
++		pr_info("S23WIFI7_DIAG target_before=%u dot11mode=%u phy_status=%u phybitmap=0x%x reg_11be=%u\n",
++			cfg->en_11be, config->dot11Mode, diag_status,
++			phybitmap, wlan_reg_phybitmap_support_11be(hdd_ctx->pdev));
++	}
++
+ 	/* 11BE mode support */
+ 	if (cfg->en_11be &&
+ 	    (!hdd_dot11Mode_support_11be(config->dot11Mode) ||
+@@ -2215,6 +2226,7 @@
+ 	hdd_set_dynamic_macaddr_update_capability(hdd_ctx, cfg);
+ 	hdd_update_fw_tdls_6g_capability(hdd_ctx, cfg);
+ 	hdd_update_fw_tdls_wideband_capability(hdd_ctx, cfg);
++	pr_info("S23WIFI7_DIAG target_after=%u\n", cfg->en_11be);
+ 	ucfg_psoc_mlme_set_11be_capab(hdd_ctx->psoc, cfg->en_11be);
+ 	hdd_update_mlo_per_link_stats_capability(hdd_ctx, cfg);
+ 	hdd_update_passthru_capability(hdd_ctx, cfg);
+--- a/qcacld-3.0/core/hdd/src/wlan_hdd_eht.c
++++ b/qcacld-3.0/core/hdd/src/wlan_hdd_eht.c
+@@ -181,17 +181,19 @@
+ 		    hdd_ctx->iftype_data_5g->eht_cap.eht_cap_elem.phy_cap_info;
+ 	uint8_t *phy_info_2g =
+ 		    hdd_ctx->iftype_data_2g->eht_cap.eht_cap_elem.phy_cap_info;
+-	bool eht_capab;
++	bool eht_capab = false;
+ 	struct ieee80211_sband_iftype_data *iftype_sta;
+ 	struct ieee80211_sband_iftype_data *iftype_ap;
+ 
+ 	hdd_enter();
+ 
+ 	ucfg_psoc_mlme_get_11be_capab(hdd_ctx->psoc, &eht_capab);
++	pr_info("S23WIFI7_DIAG psoc_eht=%u\n", eht_capab);
+ 	if (!eht_capab)
+ 		return;
+ 
+ 	status = ucfg_mlme_cfg_get_eht_caps(hdd_ctx->psoc, &eht_cap_cfg);
++	pr_info("S23WIFI7_DIAG eht_cfg_status=%u\n", status);
+ 	if (QDF_IS_STATUS_ERROR(status))
+ 		return;
+ 
+@@ -258,6 +260,15 @@
+ 
+ band_6ghz:
+ 	hdd_update_wiphy_eht_caps_6ghz(hdd_ctx, eht_cap_cfg);
++
++	pr_info("S23WIFI7_DIAG final 2g_he=%u 2g_eht=%u 5g_he=%u 5g_eht=%u 6g_he=%u 6g_eht=%u target_present=%u\n",
++		hdd_ctx->iftype_data_2g ? hdd_ctx->iftype_data_2g->he_cap.has_he : 0,
++		hdd_ctx->iftype_data_2g ? hdd_ctx->iftype_data_2g->eht_cap.has_eht : 0,
++		hdd_ctx->iftype_data_5g ? hdd_ctx->iftype_data_5g->he_cap.has_he : 0,
++		hdd_ctx->iftype_data_5g ? hdd_ctx->iftype_data_5g->eht_cap.has_eht : 0,
++		hdd_ctx->iftype_data_6g ? hdd_ctx->iftype_data_6g->he_cap.has_he : 0,
++		hdd_ctx->iftype_data_6g ? hdd_ctx->iftype_data_6g->eht_cap.has_eht : 0,
++		eht_cap_cfg.present);
+ 
+ 	hdd_exit();
+ }

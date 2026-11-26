@@ -11,6 +11,13 @@ export PATH="$CLANG_DIR/bin:$PATH" CCACHE_DISABLE=1
 [[ -x "$CLANG_DIR/bin/clang" && -s "$KOUT/Module.symvers" && -s "$KOUT/.config" && -s "$KOUT/arch/arm64/boot/Image" ]]
 TASK_WORK=$(mktemp -d /tmp/wifi-mosey-ci.XXXXXX)
 tar -xzf "$PACKAGE/driver-source.tar.gz" -C "$TASK_WORK"
+case "${WIFI7_DIAGNOSTICS:-false}" in
+  true)
+    patch --batch --fuzz=0 -p1 -d "$TASK_WORK/wlan-driver" < "$PACKAGE/diagnostics/0001-log-wifi7-capability-gates.patch"
+    ;;
+  false) ;;
+  *) echo 'WIFI7_DIAGNOSTICS must be true or false' >&2; exit 1 ;;
+esac
 python3 "$PACKAGE/prepare-cfg80211.py" "$KERNEL/include/net/cfg80211.h" "$PACKAGE/cfg80211-patches" "$TASK_WORK/generated-compat"
 # Ensure the reviewed normalization and patches reproduce the saved stock overlay.
 cmp "$TASK_WORK/generated-compat/include/net/cfg80211.h" "$TASK_WORK/vendor-compat/include/net/cfg80211.h"
@@ -54,10 +61,11 @@ for module in "$DEST"/*.ko; do
   fi
 done
 python3 - "$KOUT/arch/arm64/boot/Image" "$DEST" "$RELEASE" <<'PY'
-import hashlib,json,subprocess,sys
+import hashlib,json,os,subprocess,sys
 from pathlib import Path
 image=Path(sys.argv[1]); dest=Path(sys.argv[2]); names=['qca_cld3_kiwi_v2.ko','s23u_wonder_provider.ko','wonder.ko']
 hashfile=lambda p: hashlib.sha256(p.read_bytes()).hexdigest()
 manifest={'kernel_image_sha256':hashfile(image),'kernel_release':sys.argv[3], 'modules':{n:hashfile(dest/n) for n in names},'compiler':subprocess.check_output(['clang','--version'],text=True).splitlines()[0]}
+manifest['wifi7_diagnostics'] = os.environ.get('WIFI7_DIAGNOSTICS', 'false') == 'true'
 (dest/'manifest.json').write_text(json.dumps(manifest,indent=2)+'\n')
 PY
