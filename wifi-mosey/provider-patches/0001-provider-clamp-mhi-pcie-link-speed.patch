@@ -1,0 +1,149 @@
+--- a/provider/s23u_wonder_provider.c	2026-11-27 16:31:01.166506383 +0100
++++ b/provider/s23u_wonder_provider.c	2026-11-27 16:31:54.011853601 +0100
+@@ -4,6 +4,11 @@
+ #include <linux/platform_device.h>
+ #include <linux/component.h>
+ #include <linux/mutex.h>
++#include <linux/kprobes.h>
++#include <linux/moduleparam.h>
++#include <linux/notifier.h>
++#include <linux/atomic.h>
++#include <linux/string.h>
+ #include <wonder/wondertap.h>
+ #include <wonder/s23u_provider.h>
+ 
+@@ -28,11 +33,17 @@
+ 	.unbind = provider_unbind,
+ };
+ 
++static void bw_clamp_arm(void);
++
+ int cnss_set_vendor_wonder_priv_data(const void *priv_data)
+ {
+ 	const struct wondertap_priv *priv = priv_data;
+ 	int ret = 0;
+ 
++	/* The WLAN driver calls this after cnss2 is live: last-chance arm. */
++	if (priv)
++		bw_clamp_arm();
++
+ 	mutex_lock(&provider_lock);
+ 	if (!provider_device) {
+ 		ret = -ENODEV;
+@@ -69,6 +80,99 @@
+ }
+ EXPORT_SYMBOL(cnss_set_vendor_wonder_priv_data);
+ 
++/*
++ * MHI PCIe link-speed clamp.
++ *
++ * When the Wondertap PASSTHRU vdev starts, WLAN.HMT.2.0 Kiwi firmware raises an
++ * MHI bandwidth-scale request for PCIe Gen3. Stock S23U cnss2 cannot apply it
++ * (msm_pcie rejects the target speed with -EINVAL), cnss_mhi_bw_scale() fails
++ * and the firmware asserts (cmnos_thread_patch.c:1269). Newer cnss2 avoids the
++ * request by advertising supported_link_speed in the QMI host capability.
++ * Clamp the requested speed before cnss2 applies it. Width is unchanged.
++ */
++struct s23u_mhi_link_info {
++	u32 target_link_speed;	/* same layout as struct mhi_link_info */
++	u32 target_link_width;
++};
++
++static unsigned int mhi_max_link_speed = 2;	/* Gen2; 0 disables the clamp */
++module_param(mhi_max_link_speed, uint, 0644);
++MODULE_PARM_DESC(mhi_max_link_speed,
++		 "Highest PCIe link speed passed to cnss2 on MHI BW scale (0=off)");
++
++static DEFINE_MUTEX(bw_clamp_lock);
++static bool bw_clamp_armed;
++static atomic_t bw_clamp_count = ATOMIC_INIT(0);
++
++static int bw_scale_pre(struct kprobe *p, struct pt_regs *regs)
++{
++	struct s23u_mhi_link_info *li = (void *)regs->regs[1];
++	unsigned int max = READ_ONCE(mhi_max_link_speed);
++	u32 speed;
++
++	if (!li || !max)
++		return 0;
++	speed = READ_ONCE(li->target_link_speed);
++	if (speed > max) {
++		WRITE_ONCE(li->target_link_speed, max);
++		if (atomic_inc_return(&bw_clamp_count) <= 16)
++			pr_info("s23u_wonder_provider: MHI link speed request 0x%x -> 0x%x\n",
++				speed, max);
++	}
++	return 0;
++}
++
++static struct kprobe bw_scale_kp = {
++	.symbol_name = "cnss_mhi_bw_scale",
++	.pre_handler = bw_scale_pre,
++};
++
++static void bw_clamp_arm(void)
++{
++	int ret;
++
++	mutex_lock(&bw_clamp_lock);
++	if (!bw_clamp_armed) {
++		bw_scale_kp.addr = NULL;
++		bw_scale_kp.flags = 0;
++		ret = register_kprobe(&bw_scale_kp);
++		if (!ret) {
++			bw_clamp_armed = true;
++			pr_info("s23u_wonder_provider: MHI link speed clamp armed (max %u)\n",
++				mhi_max_link_speed);
++		}
++	}
++	mutex_unlock(&bw_clamp_lock);
++}
++
++static void bw_clamp_disarm(void)
++{
++	mutex_lock(&bw_clamp_lock);
++	if (bw_clamp_armed) {
++		unregister_kprobe(&bw_scale_kp);
++		bw_clamp_armed = false;
++	}
++	mutex_unlock(&bw_clamp_lock);
++}
++
++static int bw_clamp_module_event(struct notifier_block *nb, unsigned long action,
++				 void *data)
++{
++	struct module *mod = data;
++
++	if (!mod || strcmp(mod->name, "cnss2"))
++		return NOTIFY_DONE;
++	if (action == MODULE_STATE_LIVE)
++		bw_clamp_arm();
++	else if (action == MODULE_STATE_GOING)
++		bw_clamp_disarm();
++	return NOTIFY_DONE;
++}
++
++static struct notifier_block bw_clamp_nb = {
++	.notifier_call = bw_clamp_module_event,
++};
++
+ static int __init s23u_provider_init(void)
+ {
+ 	struct s23u_wonder_platform_data pdata = {
+@@ -92,11 +196,16 @@
+ 		provider_device = NULL;
+ 		return ret;
+ 	}
++	/* cnss2 may load before or after us; arm now and on its LIVE event. */
++	if (!register_module_notifier(&bw_clamp_nb))
++		bw_clamp_arm();
+ 	return 0;
+ }
+ 
+ static void __exit s23u_provider_exit(void)
+ {
++	unregister_module_notifier(&bw_clamp_nb);
++	bw_clamp_disarm();
+ 	platform_device_unregister(frontend_device);
+ 	cnss_set_vendor_wonder_priv_data(NULL);
+ 	platform_device_unregister(provider_device);

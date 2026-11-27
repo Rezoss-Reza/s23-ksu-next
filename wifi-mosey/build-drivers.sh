@@ -18,6 +18,16 @@ case "${WIFI7_DIAGNOSTICS:-false}" in
   false) ;;
   *) echo 'WIFI7_DIAGNOSTICS must be true or false' >&2; exit 1 ;;
 esac
+# HMT.2.0 Kiwi firmware requests PCIe Gen3 over MHI when the Wondertap PASSTHRU
+# vdev starts; stock S23U cnss2 rejects it and the firmware asserts. The provider
+# patch clamps that request to Gen2 (validated on device: AirDrop to iPad OK).
+case "${MHI_LINK_SPEED_CLAMP:-true}" in
+  true)
+    patch --batch --fuzz=0 -p1 -d "$TASK_WORK" < "$PACKAGE/provider-patches/0001-provider-clamp-mhi-pcie-link-speed.patch"
+    ;;
+  false) ;;
+  *) echo 'MHI_LINK_SPEED_CLAMP must be true or false' >&2; exit 1 ;;
+esac
 python3 "$PACKAGE/prepare-cfg80211.py" "$KERNEL/include/net/cfg80211.h" "$PACKAGE/cfg80211-patches" "$TASK_WORK/generated-compat"
 # Ensure the reviewed normalization and patches reproduce the saved stock overlay.
 cmp "$TASK_WORK/generated-compat/include/net/cfg80211.h" "$TASK_WORK/vendor-compat/include/net/cfg80211.h"
@@ -67,5 +77,6 @@ image=Path(sys.argv[1]); dest=Path(sys.argv[2]); names=['qca_cld3_kiwi_v2.ko','s
 hashfile=lambda p: hashlib.sha256(p.read_bytes()).hexdigest()
 manifest={'kernel_image_sha256':hashfile(image),'kernel_release':sys.argv[3], 'modules':{n:hashfile(dest/n) for n in names},'compiler':subprocess.check_output(['clang','--version'],text=True).splitlines()[0]}
 manifest['wifi7_diagnostics'] = os.environ.get('WIFI7_DIAGNOSTICS', 'false') == 'true'
+manifest['mhi_link_speed_clamp'] = os.environ.get('MHI_LINK_SPEED_CLAMP', 'true') == 'true'
 (dest/'manifest.json').write_text(json.dumps(manifest,indent=2)+'\n')
 PY
