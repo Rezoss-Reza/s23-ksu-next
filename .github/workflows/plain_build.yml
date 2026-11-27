@@ -9,6 +9,10 @@ on:
         description: Log Wi-Fi 7 capability gates without enabling features
         type: boolean
         default: false
+      mhi_link_speed_clamp:
+        description: Clamp Wi-Fi MHI PCIe Gen3 requests to Gen2 (needed for Mosey/AirDrop with HMT.2.0 firmware)
+        type: boolean
+        default: true
   #push:
     
 jobs:
@@ -147,6 +151,7 @@ jobs:
       - name: Build experimental Wi-Fi and Mosey kernel modules
         env:
           WIFI7_DIAGNOSTICS: ${{ inputs.wifi7_diagnostics && 'true' || 'false' }}
+          MHI_LINK_SPEED_CLAMP: ${{ (github.event_name != 'workflow_dispatch' || inputs.mhi_link_speed_clamp) && 'true' || 'false' }}
         run: |
           set -euxo pipefail
           sudo apt install -y kmod
